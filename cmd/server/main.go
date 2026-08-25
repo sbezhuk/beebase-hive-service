@@ -11,10 +11,15 @@ import (
 
 	"github.com/joho/godotenv"
 
+	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/config"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/postgres"
+	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 	transporthttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http"
+	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
 
+	"github.com/sbezhuk/beebase-common/authmw"
 	"github.com/sbezhuk/beebase-common/logger"
 	"github.com/sbezhuk/beebase-common/server"
 )
@@ -51,7 +56,20 @@ func run() error {
 
 	log.Info("connected to database")
 
-	router := transporthttp.NewRouter(log, db)
+	// Fails fast at boot if auth-service's JWKS endpoint isn't reachable,
+	// consistent with how the database connection above is handled;
+	// docker-compose orders auth-service before this service accordingly.
+	verifier, err := authmw.NewVerifierFromJWKSURL(ctx, cfg.AuthJWKSURL)
+	if err != nil {
+		return fmt.Errorf("build JWKS verifier: %w", err)
+	}
+
+	hiveRepo := repopostgres.NewHiveRepository(db)
+	apiaryVerifier := apiaryclient.New(cfg.ApiaryServiceURL)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier)
+	hiveHandler := hivehttp.NewHandler(hiveService, log)
+
+	router := transporthttp.NewRouter(log, db, hiveHandler, verifier)
 
 	srv := server.New(server.Config{
 		Addr:         ":" + cfg.HTTPPort,

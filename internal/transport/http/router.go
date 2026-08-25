@@ -10,10 +10,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	httpmw "github.com/sbezhuk/beebase-common/authmw"
+	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
 )
 
 // NewRouter builds the root HTTP handler for the service.
-func NewRouter(log *slog.Logger, db *pgxpool.Pool) http.Handler {
+func NewRouter(
+	log *slog.Logger,
+	db *pgxpool.Pool,
+	hiveHandler *hivehttp.Handler,
+	tokenParser httpmw.AccessTokenParser,
+) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -23,6 +31,16 @@ func NewRouter(log *slog.Logger, db *pgxpool.Pool) http.Handler {
 
 	r.Get("/health", HealthHandler)
 	r.Get("/ready", ReadyHandler(db))
+
+	r.Route("/api/v1/hives", func(r chi.Router) {
+		r.Use(httpmw.RequireAuth(tokenParser))
+
+		r.Post("/", hiveHandler.Create)
+		r.Get("/", hiveHandler.List)
+		r.Get("/{hiveID}", hiveHandler.Get)
+		r.Put("/{hiveID}", hiveHandler.Update)
+		r.Delete("/{hiveID}", hiveHandler.Delete)
+	})
 
 	return r
 }

@@ -1,0 +1,294 @@
+openapi: 3.0.3
+info:
+  title: BeeBase Hive Service API
+  description: >
+    Hive management service for BeeBase, an open-source backend for a
+    beekeeper management application split into microservices. Access
+    tokens are issued by auth-service (see its OpenAPI spec); this
+    service verifies them against auth-service's public key and never
+    trusts a userID from anywhere but a verified token.
+
+    Every hive belongs to an apiary owned by apiary-service. Creating a
+    hive requires that the caller own the referenced apiary; this service
+    confirms that by forwarding the caller's own access token to
+    apiary-service's GET /api/v1/apiaries/{id} and trusting its answer -
+    it never queries apiary ownership itself.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: system
+    description: Liveness and readiness probes.
+  - name: hives
+    description: Create, read, update, and delete a user's own hives.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Liveness probe
+      security: []
+      description: Always returns 200 while the process is running. Has no dependencies.
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+
+  /ready:
+    get:
+      tags: [system]
+      summary: Readiness probe
+      security: []
+      description: Returns 200 only if the database is reachable.
+      responses:
+        "200":
+          description: The service is ready to receive traffic.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "503":
+          description: A dependency (the database) is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+
+  /api/v1/hives:
+    post:
+      tags: [hives]
+      summary: Create a hive under one of the caller's own apiaries
+      description: >
+        Rejected with 404 apiary_not_found if apiary_id doesn't exist or
+        doesn't belong to the caller — verified live against
+        apiary-service, not trusted from the request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateHiveRequest" }
+      responses:
+        "201":
+          description: Hive created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HiveResponse" }
+        "400":
+          description: Request failed validation (including a missing or malformed apiary_id).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: apiary_id doesn't exist, or belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    get:
+      tags: [hives]
+      summary: List the authenticated user's hives
+      description: Returns only hives owned by the caller — never another user's.
+      responses:
+        "200":
+          description: The caller's hives.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HiveResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/hives/{hiveId}:
+    parameters:
+      - name: hiveId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [hives]
+      summary: Get one of the authenticated user's hives
+      description: >
+        Returns 404 both when hiveId doesn't exist and when it belongs to
+        a different user — the two cases are indistinguishable to the
+        caller, by design.
+      responses:
+        "200":
+          description: The hive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HiveResponse" }
+        "400":
+          description: hiveId is not a valid UUID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: No such hive, or it belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    put:
+      tags: [hives]
+      summary: Replace a hive's editable fields
+      description: >
+        Full replacement (PUT semantics), not a partial patch: name,
+        location, and notes are all set from the request body. A hive
+        can't be moved to a different apiary — there's no apiary_id here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateHiveRequest" }
+      responses:
+        "200":
+          description: The updated hive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HiveResponse" }
+        "400":
+          description: hiveId is not a valid UUID, or the request failed validation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: No such hive, or it belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    delete:
+      tags: [hives]
+      summary: Delete a hive
+      description: Soft delete — the row is retained (deleted_at is set) for future sync support.
+      responses:
+        "204":
+          description: The hive is deleted (or already was).
+        "400":
+          description: hiveId is not a valid UUID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: No such hive, or it belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: An access token issued by auth-service's /api/v1/auth/login (or /register or /refresh).
+
+  schemas:
+    StatusResponse:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+
+    CreateHiveRequest:
+      type: object
+      required: [apiary_id, name]
+      properties:
+        apiary_id: { type: string, format: uuid, description: Must be an apiary owned by the caller. }
+        name: { type: string, maxLength: 200 }
+        location: { type: string, maxLength: 500 }
+        notes: { type: string, maxLength: 2000 }
+
+    UpdateHiveRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        location: { type: string, maxLength: 500 }
+        notes: { type: string, maxLength: 2000 }
+
+    HiveResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        apiary_id: { type: string, format: uuid }
+        name: { type: string }
+        location: { type: string }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ErrorResponse:
+      type: object
+      description: >
+        "code" is the stable, machine-readable key: build any localized
+        message off of it, not off "message" (an English fallback for logs
+        and manual debugging, not meant to be shown to end users).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - hive_not_found
+                - apiary_not_found
+                - invalid_hive_id
+                - missing_authorization
+                - invalid_access_token
+                - invalid_body
+                - internal_error
+              example: hive_not_found
+            message: { type: string, example: hive not found }
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, enum: [validation_error] }
+            message: { type: string, example: request validation failed }
+            fields:
+              type: object
+              description: >
+                Field name to error code. Each value is a stable key (not a
+                human-readable message) meant to be localized client-side.
+              additionalProperties:
+                type: string
+                enum:
+                  - apiary_id_required
+                  - apiary_id_invalid
+                  - name_required
+                  - name_too_long
+                  - location_too_long
+                  - notes_too_long
+              example: { apiary_id: "apiary_id_invalid" }
