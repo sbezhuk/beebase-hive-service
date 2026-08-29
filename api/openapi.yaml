@@ -96,15 +96,37 @@ paths:
     get:
       tags: [hives]
       summary: List the authenticated user's hives
-      description: Returns only hives owned by the caller — never another user's.
+      description: >
+        Returns only hives owned by the caller — never another user's — as
+        a page of results. Omitting page/limit falls back to page=1,
+        limit=20.
+      parameters:
+        - name: page
+          in: query
+          description: 1-indexed page number.
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          description: Rows per page.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         "200":
-          description: The caller's hives.
+          description: A page of the caller's hives.
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/HiveResponse" }
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/HiveResponse" }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
+        "400":
+          description: page or limit is invalid.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
         "401":
           description: Missing, invalid, or expired access token.
           content:
@@ -246,6 +268,18 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
+    Pagination:
+      type: object
+      description: Metadata describing the requested page relative to the full result set.
+      required: [page, limit, total, total_pages, has_next, has_previous]
+      properties:
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+        total: { type: integer, description: Total matching rows across all pages., example: 125 }
+        total_pages: { type: integer, example: 7 }
+        has_next: { type: boolean }
+        has_previous: { type: boolean }
+
     ErrorResponse:
       type: object
       description: >
@@ -291,4 +325,6 @@ components:
                   - name_too_long
                   - location_too_long
                   - notes_too_long
+                  - invalid_page
+                  - invalid_limit
               example: { apiary_id: "apiary_id_invalid" }

@@ -17,6 +17,7 @@ import (
 
 	httpmw "github.com/sbezhuk/beebase-common/authmw"
 	"github.com/sbezhuk/beebase-common/httpx"
+	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 )
@@ -79,13 +80,19 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hives, err := h.service.List(r.Context(), userID)
+	p, fields := pagination.ParseParams(r)
+	if len(fields) > 0 {
+		httpx.WriteValidationError(w, fields)
+		return
+	}
+
+	hives, total, err := h.service.List(r.Context(), userID, p)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newListResponse(hives))
+	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives), p, total))
 }
 
 // Get handles GET /hives/{hiveID}.

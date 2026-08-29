@@ -3,11 +3,13 @@ package hive_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 )
@@ -42,17 +44,34 @@ func (f *fakeRepo) GetByID(_ context.Context, userID, hiveID uuid.UUID) (*hive.H
 	return &cp, nil
 }
 
-func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]*hive.Hive, error) {
+func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID, p pagination.Params) ([]*hive.Hive, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []*hive.Hive
+	var all []*hive.Hive
 	for _, h := range f.byID {
 		if h.UserID == userID && h.DeletedAt == nil {
 			cp := *h
-			out = append(out, &cp)
+			all = append(all, &cp)
 		}
 	}
-	return out, nil
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.Before(all[j].CreatedAt)
+		}
+		return all[i].ID.String() < all[j].ID.String()
+	})
+
+	total := len(all)
+	start := p.Offset()
+	if start > total {
+		start = total
+	}
+	end := start + p.Limit
+	if end > total {
+		end = total
+	}
+
+	return all[start:end], total, nil
 }
 
 func (f *fakeRepo) Update(_ context.Context, h *hive.Hive) error {
@@ -235,9 +254,12 @@ func TestList_ReturnsOnlyOwnHives(t *testing.T) {
 		t.Fatalf("create B1: %v", err)
 	}
 
-	list, err := svc.List(context.Background(), userA)
+	list, total, err := svc.List(context.Background(), userA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit})
 	if err != nil {
 		t.Fatalf("List: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("List total = %d, want 2", total)
 	}
 	if len(list) != 2 {
 		t.Fatalf("List returned %d hives, want 2", len(list))
@@ -246,6 +268,69 @@ func TestList_ReturnsOnlyOwnHives(t *testing.T) {
 		if h.UserID != userA {
 			t.Errorf("List leaked hive %s owned by %s into userA's list", h.ID, h.UserID)
 		}
+	}
+}
+
+func TestList_Pagination(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := apphive.NewService(newFakeRepo(), verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	for i := 0; i < 5; i++ {
+		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	firstPage, total, err := svc.List(context.Background(), userID, pagination.Params{Page: 1, Limit: 2})
+	if err != nil {
+		t.Fatalf("List page 1: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(firstPage) != 2 {
+		t.Fatalf("page 1 returned %d hives, want 2", len(firstPage))
+	}
+
+	lastPage, total, err := svc.List(context.Background(), userID, pagination.Params{Page: 3, Limit: 2})
+	if err != nil {
+		t.Fatalf("List page 3: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(lastPage) != 1 {
+		t.Fatalf("page 3 returned %d hives, want 1", len(lastPage))
+	}
+
+	beyond, total, err := svc.List(context.Background(), userID, pagination.Params{Page: 10, Limit: 2})
+	if err != nil {
+		t.Fatalf("List page 10: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(beyond) != 0 {
+		t.Fatalf("page beyond available data returned %d hives, want 0", len(beyond))
+	}
+}
+
+func TestList_Empty(t *testing.T) {
+	svc := apphive.NewService(newFakeRepo(), newFakeApiaryVerifier())
+
+	list, total, err := svc.List(context.Background(), uuid.New(), pagination.Params{Page: 1, Limit: pagination.DefaultLimit})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("total = %d, want 0", total)
+	}
+	if len(list) != 0 {
+		t.Fatalf("List = %v, want empty", list)
 	}
 }
 

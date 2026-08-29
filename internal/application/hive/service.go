@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sbezhuk/beebase-common/pagination"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 )
 
@@ -51,9 +52,10 @@ func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive
 	return s.hives.GetByID(ctx, userID, hiveID)
 }
 
-// List returns every hive belonging to userID.
-func (s *Service) List(ctx context.Context, userID uuid.UUID) ([]*hive.Hive, error) {
-	return s.hives.ListByUser(ctx, userID)
+// List returns the page of hives described by p, out of every hive
+// belonging to userID.
+func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params) ([]*hive.Hive, int, error) {
+	return s.hives.ListByUser(ctx, userID, p)
 }
 
 // Update replaces the editable fields of the hive identified by hiveID,

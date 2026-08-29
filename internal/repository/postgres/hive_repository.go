@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sbezhuk/beebase-common/pagination"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 )
 
@@ -60,17 +61,29 @@ func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) 
 	return &h, nil
 }
 
-func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*hive.Hive, error) {
+func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params) ([]*hive.Hive, int, error) {
+	const countQ = `
+		SELECT count(*)
+		FROM hives
+		WHERE user_id = $1 AND deleted_at IS NULL
+	`
+
+	var total int
+	if err := r.db.QueryRow(ctx, countQ, userID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("postgres: count hives: %w", err)
+	}
+
 	const q = `
 		SELECT id, apiary_id, user_id, name, location, notes, created_at, updated_at, deleted_at
 		FROM hives
 		WHERE user_id = $1 AND deleted_at IS NULL
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
+		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.Query(ctx, q, userID)
+	rows, err := r.db.Query(ctx, q, userID, p.Limit, p.Offset())
 	if err != nil {
-		return nil, fmt.Errorf("postgres: list hives: %w", err)
+		return nil, 0, fmt.Errorf("postgres: list hives: %w", err)
 	}
 	defer rows.Close()
 
@@ -78,15 +91,15 @@ func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*h
 	for rows.Next() {
 		var h hive.Hive
 		if err := rows.Scan(&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Location, &h.Notes, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt); err != nil {
-			return nil, fmt.Errorf("postgres: scan hive: %w", err)
+			return nil, 0, fmt.Errorf("postgres: scan hive: %w", err)
 		}
 		hives = append(hives, &h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: list hives: %w", err)
+		return nil, 0, fmt.Errorf("postgres: list hives: %w", err)
 	}
 
-	return hives, nil
+	return hives, total, nil
 }
 
 func (r *HiveRepository) Update(ctx context.Context, h *hive.Hive) error {
