@@ -70,23 +70,91 @@ func (f *fakeApiaryService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // fakeCascadeTarget stands in for inspection-service's or media-service's
-// delete endpoint: it always succeeds (204) and records every request it
-// received, so tests can assert hive-service's cascade actually reached
-// it, without running a second full service.
+// delete endpoint, and - for media-service - the read endpoints
+// hive-service's Get/Update now call to reconcile a hive's attached
+// images: it always succeeds, answering GET /api/v1/media?owner_id=... and
+// GET /api/v1/media/{id} from an in-memory set of "attached" media a test
+// can seed via attach(), and 204 to everything else (including DELETE, so
+// it still works as a plain cascade-delete stand-in for inspection-
+// service). It records every request it received, so tests can assert
+// hive-service's cascade actually reached it, without running a second
+// full service.
 type fakeCascadeTarget struct {
 	mu       sync.Mutex
 	received []*http.Request
+	attached map[uuid.UUID]uuid.UUID // mediaID -> ownerID
 }
 
 func newFakeCascadeTarget() *fakeCascadeTarget {
-	return &fakeCascadeTarget{}
+	return &fakeCascadeTarget{attached: map[uuid.UUID]uuid.UUID{}}
+}
+
+// attach registers mediaID as already attached to ownerID, so this fake's
+// GET endpoints report it as media-service would - letting a test
+// exercise images reconciliation without a real media-service.
+func (f *fakeCascadeTarget) attach(ownerID, mediaID uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attached[mediaID] = ownerID
 }
 
 func (f *fakeCascadeTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.received = append(f.received, r.Clone(r.Context()))
 	f.mu.Unlock()
-	w.WriteHeader(http.StatusNoContent)
+
+	switch {
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/media/"):
+		f.serveGetOne(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/media":
+		f.serveList(w, r)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (f *fakeCascadeTarget) serveGetOne(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/api/v1/media/"))
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	f.mu.Lock()
+	ownerID, ok := f.attached[id]
+	f.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": id, "owner_type": "HIVE", "owner_id": ownerID,
+	})
+}
+
+func (f *fakeCascadeTarget) serveList(w http.ResponseWriter, r *http.Request) {
+	ownerID, err := uuid.Parse(r.URL.Query().Get("owner_id"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	f.mu.Lock()
+	items := []map[string]any{}
+	for id, owner := range f.attached {
+		if owner == ownerID {
+			items = append(items, map[string]any{"id": id, "owner_type": "HIVE", "owner_id": owner})
+		}
+	}
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"items":      items,
+		"pagination": map[string]any{"page": 1, "limit": 100, "total": len(items), "total_pages": 1, "has_next": false, "has_previous": false},
+	})
 }
 
 // calledForPath reports whether any received request's path matches want
@@ -590,5 +658,83 @@ func TestHiveFlow_DeleteByApiary(t *testing.T) {
 	resp = stack.request(t, http.MethodGet, "/api/v1/hives/"+keep.ID.String(), otherToken, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get hive under a different apiary after DeleteByApiary: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// TestHiveFlow_UpdateReconcilesImages is the end-to-end proof of the
+// images reconciliation feature: a GET reports whatever media-service
+// says is attached, an update that doesn't mention images leaves it
+// alone, and an update with an explicit (deduplicated) images list prunes
+// whatever isn't listed while rejecting IDs that aren't already this
+// hive's own media.
+func TestHiveFlow_UpdateReconcilesImages(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiaryID.String(),
+		"name":      "Hive 1",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var created hivehttp.Response
+	decodeJSON(t, resp, &created)
+	if len(created.Images) != 0 {
+		t.Fatalf("create: images = %v, want empty", created.Images)
+	}
+
+	keep := uuid.New()
+	drop := uuid.New()
+	stack.media.attach(created.ID, keep)
+	stack.media.attach(created.ID, drop)
+
+	// Get reports both, without having been asked to change anything.
+	resp = stack.request(t, http.MethodGet, "/api/v1/hives/"+created.ID.String(), token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var fetched hivehttp.Response
+	decodeJSON(t, resp, &fetched)
+	if len(fetched.Images) != 2 {
+		t.Fatalf("get: images = %v, want 2 items", fetched.Images)
+	}
+
+	// Update without an images field leaves both attached.
+	resp = stack.request(t, http.MethodPut, "/api/v1/hives/"+created.ID.String(), token, map[string]string{"name": "Renamed"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update without images: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var untouched hivehttp.Response
+	decodeJSON(t, resp, &untouched)
+	if len(untouched.Images) != 2 {
+		t.Fatalf("update without images: images = %v, want 2 items (untouched)", untouched.Images)
+	}
+
+	// Update with an explicit (deduplicated) images list prunes "drop".
+	resp = stack.request(t, http.MethodPut, "/api/v1/hives/"+created.ID.String(), token, map[string]any{
+		"name":   "Renamed again",
+		"images": []string{keep.String(), keep.String()},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update with images: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var pruned hivehttp.Response
+	decodeJSON(t, resp, &pruned)
+	if len(pruned.Images) != 1 || pruned.Images[0] != keep {
+		t.Fatalf("update with images: images = %v, want [%s]", pruned.Images, keep)
+	}
+
+	// An update referencing a media ID that was never attached to this
+	// hive is rejected as a validation error.
+	resp = stack.request(t, http.MethodPut, "/api/v1/hives/"+created.ID.String(), token, map[string]any{
+		"name":   "Should not apply",
+		"images": []string{uuid.New().String()},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("update with foreign image: status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }

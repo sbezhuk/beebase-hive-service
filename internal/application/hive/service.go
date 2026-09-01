@@ -23,11 +23,11 @@ type Service struct {
 	hives       hive.Repository
 	apiaries    ApiaryVerifier
 	inspections InspectionDeleter
-	media       MediaDeleter
+	media       MediaClient
 }
 
 // NewService constructs a Service.
-func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, media MediaDeleter) *Service {
+func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, media MediaClient) *Service {
 	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, media: media}
 }
 
@@ -49,9 +49,22 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 	return h, nil
 }
 
-// Get returns the hive identified by hiveID, if it belongs to userID.
-func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive, error) {
-	return s.hives.GetByID(ctx, userID, hiveID)
+// Get returns the hive identified by hiveID, if it belongs to userID,
+// alongside the IDs of every media item currently attached to it.
+// accessToken is the caller's own access token, forwarded to
+// media-service so it can run its own ownership check.
+func (s *Service) Get(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID) (*hive.Hive, []uuid.UUID, error) {
+	h, err := s.hives.GetByID(ctx, userID, hiveID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	images, err := s.media.ListAttached(ctx, accessToken, hiveID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hive: list attached media: %w", err)
+	}
+
+	return h, images, nil
 }
 
 // List returns the page of hives described by p, out of every hive
@@ -61,11 +74,26 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Param
 }
 
 // Update replaces the editable fields of the hive identified by hiveID,
-// if it belongs to userID.
-func (s *Service) Update(ctx context.Context, userID, hiveID uuid.UUID, in UpdateInput) (*hive.Hive, error) {
+// if it belongs to userID, and returns the resulting set of attached
+// media IDs. accessToken is the caller's own access token, forwarded to
+// media-service so it can run its own ownership check. When in.Images is
+// non-nil, it reconciles the hive's attached media in media-service to
+// match exactly (see reconcileImages); when nil, the currently attached
+// media is left untouched and simply reported back.
+func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID, in UpdateInput) (*hive.Hive, []uuid.UUID, error) {
 	h, err := s.hives.GetByID(ctx, userID, hiveID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	var images []uuid.UUID
+	if in.Images != nil {
+		images, err = s.reconcileImages(ctx, accessToken, hiveID, *in.Images)
+	} else {
+		images, err = s.media.ListAttached(ctx, accessToken, hiveID)
+	}
+	if err != nil {
+		return nil, nil, err
 	}
 
 	h.Name = in.Name
@@ -74,10 +102,60 @@ func (s *Service) Update(ctx context.Context, userID, hiveID uuid.UUID, in Updat
 	h.UpdatedAt = time.Now().UTC()
 
 	if err := s.hives.Update(ctx, h); err != nil {
-		return nil, fmt.Errorf("hive: update: %w", err)
+		return nil, nil, fmt.Errorf("hive: update: %w", err)
 	}
 
-	return h, nil
+	return h, images, nil
+}
+
+// reconcileImages makes hiveID's attached media in media-service match
+// desired exactly, and returns the resulting set. Every currently
+// attached media ID absent from desired is detached; every ID in desired
+// must already be attached to hiveID - a media item's owner is fixed at
+// upload time in media-service and can't be moved between owners, so this
+// can only ever prune the attached set, never attach media uploaded
+// elsewhere - or Update fails with ErrImageNotFound before any detach
+// happens. desired is deduplicated first so a client submitting the same
+// ID twice can't cause redundant work or an error.
+func (s *Service) reconcileImages(ctx context.Context, accessToken string, hiveID uuid.UUID, desired []uuid.UUID) ([]uuid.UUID, error) {
+	current, err := s.media.ListAttached(ctx, accessToken, hiveID)
+	if err != nil {
+		return nil, fmt.Errorf("hive: list attached media: %w", err)
+	}
+	currentSet := make(map[uuid.UUID]bool, len(current))
+	for _, id := range current {
+		currentSet[id] = true
+	}
+
+	wanted := make(map[uuid.UUID]bool, len(desired))
+	dedup := make([]uuid.UUID, 0, len(desired))
+	for _, id := range desired {
+		if wanted[id] {
+			continue
+		}
+		wanted[id] = true
+		dedup = append(dedup, id)
+	}
+
+	for _, id := range dedup {
+		if currentSet[id] {
+			continue
+		}
+		if err := s.media.VerifyAttached(ctx, accessToken, hiveID, id); err != nil {
+			return nil, err
+		}
+	}
+
+	for id := range currentSet {
+		if wanted[id] {
+			continue
+		}
+		if err := s.media.Detach(ctx, accessToken, id); err != nil {
+			return nil, fmt.Errorf("hive: detach media %s: %w", id, err)
+		}
+	}
+
+	return dedup, nil
 }
 
 // Delete cascades: every inspection and every media item belonging to

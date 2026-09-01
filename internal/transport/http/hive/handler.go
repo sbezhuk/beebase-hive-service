@@ -32,6 +32,7 @@ const (
 	CodeInvalidHiveID   = "invalid_hive_id"
 	CodeApiaryNotFound  = "apiary_not_found"
 	CodeInvalidApiaryID = "invalid_apiary_id"
+	CodeImageNotFound   = "image_not_found"
 )
 
 // Handler exposes the hive HTTP endpoints. Every method requires the
@@ -71,7 +72,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusCreated, newResponse(created))
+	httpx.WriteJSON(w, http.StatusCreated, newResponse(created, nil))
 }
 
 // List handles GET /hives.
@@ -98,7 +99,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 // Get handles GET /hives/{hiveID}.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	userID, _, ok := h.requireAuth(w, r)
+	userID, token, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
@@ -108,18 +109,18 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	got, err := h.service.Get(r.Context(), userID, hiveID)
+	got, images, err := h.service.Get(r.Context(), userID, token, hiveID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newResponse(got))
+	httpx.WriteJSON(w, http.StatusOK, newResponse(got, images))
 }
 
 // Update handles PUT /hives/{hiveID}.
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
-	userID, _, ok := h.requireAuth(w, r)
+	userID, token, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
@@ -134,17 +135,27 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.service.Update(r.Context(), userID, hiveID, apphive.UpdateInput{
+	var images *[]uuid.UUID
+	if req.Images != nil {
+		parsed := make([]uuid.UUID, len(req.Images))
+		for i, s := range req.Images {
+			parsed[i], _ = uuid.Parse(s) // already validated by req.Validate
+		}
+		images = &parsed
+	}
+
+	updated, resultImages, err := h.service.Update(r.Context(), userID, token, hiveID, apphive.UpdateInput{
 		Name:     req.Name,
 		Location: req.Location,
 		Notes:    req.Notes,
+		Images:   images,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newResponse(updated))
+	httpx.WriteJSON(w, http.StatusOK, newResponse(updated, resultImages))
 }
 
 // Delete handles DELETE /hives/{hiveID}. It cascades: every inspection and
@@ -226,6 +237,8 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusNotFound, CodeHiveNotFound, "hive not found")
 	case errors.Is(err, apphive.ErrApiaryNotFound):
 		httpx.WriteError(w, http.StatusNotFound, CodeApiaryNotFound, "apiary not found")
+	case errors.Is(err, apphive.ErrImageNotFound):
+		httpx.WriteValidationError(w, map[string]string{"images": CodeImageNotFound})
 	default:
 		httpx.WriteInternalError(w, h.log, err)
 	}

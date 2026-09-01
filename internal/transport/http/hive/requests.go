@@ -26,6 +26,7 @@ const (
 	CodeNameTooLong      = "name_too_long"
 	CodeLocationTooLong  = "location_too_long"
 	CodeNotesTooLong     = "notes_too_long"
+	CodeImagesInvalid    = "images_invalid"
 )
 
 // validatable is implemented by every request DTO in this package.
@@ -83,10 +84,26 @@ type UpdateRequest struct {
 	Name     string `json:"name"`
 	Location string `json:"location"`
 	Notes    string `json:"notes"`
+	// Images, when present (even as an empty array), is the desired
+	// final set of already-uploaded media IDs attached to this hive;
+	// omitting the field (or sending JSON null) leaves currently
+	// attached media untouched. Go's json package already distinguishes
+	// "absent/null" (nil slice) from "[]" (non-nil, empty slice), which
+	// is exactly the distinction this needs.
+	Images []string `json:"images"`
 }
 
 func (r *UpdateRequest) Validate() map[string]string {
-	return validateFields(r.Name, r.Location, r.Notes)
+	fields := validateFields(r.Name, r.Location, r.Notes)
+
+	for _, id := range r.Images {
+		if _, err := uuid.Parse(id); err != nil {
+			fields["images"] = CodeImagesInvalid
+			break
+		}
+	}
+
+	return fields
 }
 
 func validateFields(name, location, notes string) map[string]string {
