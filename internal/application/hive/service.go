@@ -20,13 +20,15 @@ import (
 // transport layer) and passes it straight through to the repository,
 // which enforces ownership at the query level.
 type Service struct {
-	hives    hive.Repository
-	apiaries ApiaryVerifier
+	hives       hive.Repository
+	apiaries    ApiaryVerifier
+	inspections InspectionDeleter
+	media       MediaDeleter
 }
 
 // NewService constructs a Service.
-func NewService(hives hive.Repository, apiaries ApiaryVerifier) *Service {
-	return &Service{hives: hives, apiaries: apiaries}
+func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, media MediaDeleter) *Service {
+	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, media: media}
 }
 
 // Create creates a new hive owned by userID under in.ApiaryID, after
@@ -78,7 +80,46 @@ func (s *Service) Update(ctx context.Context, userID, hiveID uuid.UUID, in Updat
 	return h, nil
 }
 
-// Delete deletes the hive identified by hiveID, if it belongs to userID.
-func (s *Service) Delete(ctx context.Context, userID, hiveID uuid.UUID) error {
-	return s.hives.Delete(ctx, userID, hiveID)
+// Delete cascades: every inspection and every media item belonging to
+// hiveID is deleted first (leaf-most first), then the hive itself is
+// hard-deleted. accessToken is the caller's own access token, forwarded
+// to inspection-service and media-service so each can run its own
+// ownership check. If any step fails, Delete stops and returns the error
+// without rolling back steps that already succeeded - there is no
+// distributed transaction across these services, by design.
+func (s *Service) Delete(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID) error {
+	if _, err := s.hives.GetByID(ctx, userID, hiveID); err != nil {
+		return err
+	}
+	return s.deleteCascade(ctx, userID, accessToken, hiveID)
+}
+
+// DeleteByApiary cascades every hive under apiaryID, in-process (no
+// self-HTTP-call): for each hive it runs the identical cascade Delete
+// uses. It stops at the first hive that fails, leaving hives already
+// fully deleted earlier in the loop deleted - the same no-rollback
+// contract as Delete, just applied across a batch.
+func (s *Service) DeleteByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID) error {
+	hives, err := s.hives.ListByApiary(ctx, userID, apiaryID)
+	if err != nil {
+		return fmt.Errorf("hive: list by apiary: %w", err)
+	}
+
+	for _, h := range hives {
+		if err := s.deleteCascade(ctx, userID, accessToken, h.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) deleteCascade(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID) error {
+	if err := s.inspections.DeleteByHive(ctx, accessToken, hiveID); err != nil {
+		return err
+	}
+	if err := s.media.DeleteByOwner(ctx, accessToken, hiveID); err != nil {
+		return err
+	}
+	return s.hives.HardDelete(ctx, userID, hiveID)
 }

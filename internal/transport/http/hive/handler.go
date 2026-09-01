@@ -28,9 +28,10 @@ import (
 // string, since it's the same meaning from the client's point of view
 // regardless of which service returned it.
 const (
-	CodeHiveNotFound   = "hive_not_found"
-	CodeInvalidHiveID  = "invalid_hive_id"
-	CodeApiaryNotFound = "apiary_not_found"
+	CodeHiveNotFound    = "hive_not_found"
+	CodeInvalidHiveID   = "invalid_hive_id"
+	CodeApiaryNotFound  = "apiary_not_found"
+	CodeInvalidApiaryID = "invalid_apiary_id"
 )
 
 // Handler exposes the hive HTTP endpoints. Every method requires the
@@ -146,9 +147,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, newResponse(updated))
 }
 
-// Delete handles DELETE /hives/{hiveID}.
+// Delete handles DELETE /hives/{hiveID}. It cascades: every inspection and
+// media item belonging to the hive is deleted first, then the hive
+// itself.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	userID, _, ok := h.requireAuth(w, r)
+	userID, token, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
@@ -158,7 +161,32 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.Delete(r.Context(), userID, hiveID); err != nil {
+	if err := h.service.Delete(r.Context(), userID, token, hiveID); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteByApiary handles DELETE /hives?apiary_id=. It cascades every hive
+// under the apiary (and, transitively, their inspections and media).
+// Called by apiary-service when it deletes an apiary, forwarding the
+// caller's own access token.
+func (h *Handler) DeleteByApiary(w http.ResponseWriter, r *http.Request) {
+	userID, token, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	raw := r.URL.Query().Get("apiary_id")
+	apiaryID, err := uuid.Parse(raw)
+	if raw == "" || err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, CodeInvalidApiaryID, "apiary_id must be a valid UUID")
+		return
+	}
+
+	if err := h.service.DeleteByApiary(r.Context(), userID, token, apiaryID); err != nil {
 		h.writeServiceError(w, err)
 		return
 	}

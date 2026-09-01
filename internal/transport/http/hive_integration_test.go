@@ -21,6 +21,8 @@ import (
 
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/inspectionclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/mediaclient"
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 	transporthttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
@@ -67,10 +69,58 @@ func (f *fakeApiaryService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// fakeCascadeTarget stands in for inspection-service's or media-service's
+// delete endpoint: it always succeeds (204) and records every request it
+// received, so tests can assert hive-service's cascade actually reached
+// it, without running a second full service.
+type fakeCascadeTarget struct {
+	mu       sync.Mutex
+	received []*http.Request
+}
+
+func newFakeCascadeTarget() *fakeCascadeTarget {
+	return &fakeCascadeTarget{}
+}
+
+func (f *fakeCascadeTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.received = append(f.received, r.Clone(r.Context()))
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// calledForPath reports whether any received request's path matches want
+// exactly.
+func (f *fakeCascadeTarget) calledForPath(want string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.received {
+		if r.URL.Path == want {
+			return true
+		}
+	}
+	return false
+}
+
+// calledWithQuery reports whether any received request's query string
+// matches want exactly (order-independent, via url.Values equality).
+func (f *fakeCascadeTarget) calledWithQuery(ownerType, ownerID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.received {
+		if r.URL.Query().Get("owner_type") == ownerType && r.URL.Query().Get("owner_id") == ownerID {
+			return true
+		}
+	}
+	return false
+}
+
 type testStack struct {
-	server *httptest.Server
-	apiary *fakeApiaryService
-	priv   ed25519.PrivateKey
+	server      *httptest.Server
+	apiary      *fakeApiaryService
+	inspections *fakeCascadeTarget
+	media       *fakeCascadeTarget
+	priv        ed25519.PrivateKey
 }
 
 // newTestStack wires a full router against a real PostgreSQL database
@@ -119,9 +169,19 @@ func newTestStack(t *testing.T) *testStack {
 	apiaryServer := httptest.NewServer(apiary)
 	t.Cleanup(apiaryServer.Close)
 
+	inspections := newFakeCascadeTarget()
+	inspectionServer := httptest.NewServer(inspections)
+	t.Cleanup(inspectionServer.Close)
+
+	media := newFakeCascadeTarget()
+	mediaServer := httptest.NewServer(media)
+	t.Cleanup(mediaServer.Close)
+
 	hiveRepo := repopostgres.NewHiveRepository(tx)
 	apiaryVerifier := apiaryclient.New(apiaryServer.URL)
-	hiveService := apphive.NewService(hiveRepo, apiaryVerifier)
+	inspectionDeleter := inspectionclient.New(inspectionServer.URL)
+	mediaDeleter := mediaclient.New(mediaServer.URL)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, mediaDeleter)
 	log := logger.New("development", "error")
 	handler := hivehttp.NewHandler(hiveService, log)
 
@@ -130,7 +190,7 @@ func newTestStack(t *testing.T) *testStack {
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
-	return &testStack{server: srv, apiary: apiary, priv: priv}
+	return &testStack{server: srv, apiary: apiary, inspections: inspections, media: media, priv: priv}
 }
 
 func (s *testStack) tokenFor(t *testing.T, userID uuid.UUID) string {
@@ -432,5 +492,103 @@ func TestHiveFlow_ListInvalidPageAndLimit(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("GET %s: status = %d, want %d", path, resp.StatusCode, http.StatusBadRequest)
 		}
+	}
+}
+
+// TestHiveFlow_DeleteCascadesInspectionsAndMedia is the end-to-end proof
+// that deleting a hive reaches inspection-service and media-service
+// before hard-deleting the hive itself, exercised over real HTTP.
+func TestHiveFlow_DeleteCascadesInspectionsAndMedia(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiaryID.String(),
+		"name":      "Gone soon",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var created hivehttp.Response
+	decodeJSON(t, resp, &created)
+
+	resp = stack.request(t, http.MethodDelete, "/api/v1/hives/"+created.ID.String(), token, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	wantInspectionsPath := "/api/v1/hives/" + created.ID.String() + "/inspections"
+	if !stack.inspections.calledForPath(wantInspectionsPath) {
+		t.Errorf("delete did not cascade to inspection-service at %s", wantInspectionsPath)
+	}
+	if !stack.media.calledWithQuery("HIVE", created.ID.String()) {
+		t.Errorf("delete did not cascade to media-service for owner_type=HIVE owner_id=%s", created.ID)
+	}
+
+	resp = stack.request(t, http.MethodGet, "/api/v1/hives/"+created.ID.String(), token, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after delete: status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+// TestHiveFlow_DeleteByApiary is the end-to-end proof of the cascade
+// primitive apiary-service calls when it deletes an apiary: every hive
+// under the apiary is fully cascade-deleted, while a hive under a
+// different apiary survives.
+func TestHiveFlow_DeleteByApiary(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	otherApiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	var ids []uuid.UUID
+	for _, name := range []string{"H1", "H2"} {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiaryID.String(),
+			"name":      name,
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: status = %d, want %d", name, resp.StatusCode, http.StatusCreated)
+		}
+		var created hivehttp.Response
+		decodeJSON(t, resp, &created)
+		ids = append(ids, created.ID)
+	}
+
+	otherToken := stack.tokenFor(t, userID)
+	stack.apiary.allow(otherToken, otherApiaryID)
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", otherToken, map[string]string{
+		"apiary_id": otherApiaryID.String(),
+		"name":      "Keep",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create keep: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var keep hivehttp.Response
+	decodeJSON(t, resp, &keep)
+
+	resp = stack.request(t, http.MethodDelete, "/api/v1/hives?apiary_id="+apiaryID.String(), token, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DeleteByApiary: status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	for _, id := range ids {
+		resp := stack.request(t, http.MethodGet, "/api/v1/hives/"+id.String(), token, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("get %s after DeleteByApiary: status = %d, want %d", id, resp.StatusCode, http.StatusNotFound)
+		}
+		if !stack.media.calledWithQuery("HIVE", id.String()) {
+			t.Errorf("DeleteByApiary did not cascade to media-service for hive %s", id)
+		}
+	}
+
+	resp = stack.request(t, http.MethodGet, "/api/v1/hives/"+keep.ID.String(), otherToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get hive under a different apiary after DeleteByApiary: status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }

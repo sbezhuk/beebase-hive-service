@@ -33,6 +33,13 @@ type Config struct {
 	// only source of truth for that: this service asks it, once, at
 	// creation time.
 	ApiaryServiceURL string
+
+	// InspectionServiceURL and MediaServiceURL are inspection-service's and
+	// media-service's base URLs. Deleting a hive cascades to its
+	// inspections and media; this service asks each to delete everything
+	// under the hive before hard-deleting it.
+	InspectionServiceURL string
+	MediaServiceURL      string
 }
 
 // Load builds a Config from environment variables, falling back to
@@ -54,6 +61,9 @@ func Load() (*Config, error) {
 
 		AuthJWKSURL:      getEnv("AUTH_JWKS_URL", ""),
 		ApiaryServiceURL: getEnv("APIARY_SERVICE_URL", ""),
+
+		InspectionServiceURL: getEnv("INSPECTION_SERVICE_URL", ""),
+		MediaServiceURL:      getEnv("MEDIA_SERVICE_URL", ""),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -64,6 +74,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.ApiaryServiceURL == "" {
 		return nil, fmt.Errorf("config: APIARY_SERVICE_URL is required")
+	}
+	if cfg.InspectionServiceURL == "" {
+		return nil, fmt.Errorf("config: INSPECTION_SERVICE_URL is required")
+	}
+	if cfg.MediaServiceURL == "" {
+		return nil, fmt.Errorf("config: MEDIA_SERVICE_URL is required")
 	}
 
 	return cfg, nil

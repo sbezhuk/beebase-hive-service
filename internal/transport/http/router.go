@@ -40,6 +40,9 @@ func NewRouter(
 		r.Get("/{hiveID}", hiveHandler.Get)
 		r.Put("/{hiveID}", hiveHandler.Update)
 		r.Delete("/{hiveID}", hiveHandler.Delete)
+		// Internal cascade primitive: called by apiary-service when it
+		// deletes an apiary, forwarding the caller's own access token.
+		r.Delete("/", hiveHandler.DeleteByApiary)
 	})
 
 	return r

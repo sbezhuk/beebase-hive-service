@@ -14,6 +14,8 @@ import (
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/config"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/inspectionclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/mediaclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/postgres"
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 	transporthttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http"
@@ -66,7 +68,9 @@ func run() error {
 
 	hiveRepo := repopostgres.NewHiveRepository(db)
 	apiaryVerifier := apiaryclient.New(cfg.ApiaryServiceURL)
-	hiveService := apphive.NewService(hiveRepo, apiaryVerifier)
+	inspectionDeleter := inspectionclient.New(cfg.InspectionServiceURL)
+	mediaDeleter := mediaclient.New(cfg.MediaServiceURL)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, mediaDeleter)
 	hiveHandler := hivehttp.NewHandler(hiveService, log)
 
 	router := transporthttp.NewRouter(log, db, hiveHandler, verifier)

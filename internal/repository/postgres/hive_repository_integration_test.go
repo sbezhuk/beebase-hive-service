@@ -356,7 +356,7 @@ func TestHiveRepository_Update_WrongOwner_NotFound(t *testing.T) {
 	}
 }
 
-func TestHiveRepository_Delete_SoftDelete(t *testing.T) {
+func TestHiveRepository_HardDelete_Success(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
@@ -374,27 +374,25 @@ func TestHiveRepository_Delete_SoftDelete(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := repo.Delete(ctx, userID, h.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := repo.HardDelete(ctx, userID, h.ID); err != nil {
+		t.Fatalf("HardDelete: %v", err)
 	}
 
 	if _, err := repo.GetByID(ctx, userID, h.ID); !errors.Is(err, hive.ErrNotFound) {
-		t.Fatalf("GetByID after delete: got %v, want ErrNotFound", err)
+		t.Fatalf("GetByID after HardDelete: got %v, want ErrNotFound", err)
 	}
 
-	// The row itself must still exist (soft delete), just filtered out by
-	// deleted_at IS NULL.
-	var deletedAt *string
-	err = tx.QueryRow(ctx, "SELECT deleted_at::text FROM hives WHERE id = $1", h.ID).Scan(&deletedAt)
-	if err != nil {
-		t.Fatalf("query raw row: %v", err)
+	// The row itself must be fully gone, not just deleted_at-marked.
+	var n int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hives WHERE id = $1", h.ID).Scan(&n); err != nil {
+		t.Fatalf("raw count: %v", err)
 	}
-	if deletedAt == nil {
-		t.Error("deleted_at is NULL after Delete; expected it to be set (soft delete)")
+	if n != 0 {
+		t.Errorf("hive still present after HardDelete; want fully removed")
 	}
 }
 
-func TestHiveRepository_Delete_WrongOwner_NotFoundAndNotDeleted(t *testing.T) {
+func TestHiveRepository_HardDelete_WrongOwner_NotFoundAndNotDeleted(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
@@ -413,11 +411,91 @@ func TestHiveRepository_Delete_WrongOwner_NotFoundAndNotDeleted(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := repo.Delete(ctx, other, h.ID); !errors.Is(err, hive.ErrNotFound) {
-		t.Fatalf("Delete by non-owner: got %v, want ErrNotFound", err)
+	if err := repo.HardDelete(ctx, other, h.ID); !errors.Is(err, hive.ErrNotFound) {
+		t.Fatalf("HardDelete by non-owner: got %v, want ErrNotFound", err)
 	}
 
 	if _, err := repo.GetByID(ctx, owner, h.ID); err != nil {
 		t.Fatalf("owner's hive should survive a failed delete attempt: %v", err)
+	}
+}
+
+func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	otherApiaryID := uuid.New()
+
+	active := hive.New(userID, apiaryID, "Active", "", "")
+	if err := repo.Create(ctx, active); err != nil {
+		t.Fatalf("create active: %v", err)
+	}
+	// Soft-deleted before this feature shipped hard deletes: ListByApiary
+	// must still find it, since it drives DeleteByApiary's cascade, which
+	// needs to finish purging leftovers even for hives already
+	// soft-deleted under the old behavior.
+	const softDelete = `UPDATE hives SET deleted_at = now() WHERE id = $1`
+	softDeleted := hive.New(userID, apiaryID, "Already gone", "", "")
+	if err := repo.Create(ctx, softDeleted); err != nil {
+		t.Fatalf("create soft-deleted: %v", err)
+	}
+	if _, err := tx.Exec(ctx, softDelete, softDeleted.ID); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+	// A hive under a different apiary must not show up.
+	if err := repo.Create(ctx, hive.New(userID, otherApiaryID, "Elsewhere", "", "")); err != nil {
+		t.Fatalf("create elsewhere: %v", err)
+	}
+
+	got, err := repo.ListByApiary(ctx, userID, apiaryID)
+	if err != nil {
+		t.Fatalf("ListByApiary: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListByApiary returned %d hives, want 2", len(got))
+	}
+	ids := map[uuid.UUID]bool{}
+	for _, h := range got {
+		ids[h.ID] = true
+	}
+	if !ids[active.ID] || !ids[softDeleted.ID] {
+		t.Errorf("ListByApiary = %v, want to include both %s and %s", ids, active.ID, softDeleted.ID)
+	}
+}
+
+func TestHiveRepository_ListByApiary_ScopedToUser(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	owner := uuid.New()
+	other := uuid.New()
+	apiaryID := uuid.New()
+
+	if err := repo.Create(ctx, hive.New(owner, apiaryID, "Owner's hive", "", "")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.ListByApiary(ctx, other, apiaryID)
+	if err != nil {
+		t.Fatalf("ListByApiary by non-owner: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListByApiary by non-owner = %v, want empty", got)
 	}
 }

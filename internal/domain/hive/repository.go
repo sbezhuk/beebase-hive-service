@@ -30,7 +30,17 @@ type Repository interface {
 	// hive identified by h.ID, scoped to h.UserID. ApiaryID is immutable
 	// and never updated.
 	Update(ctx context.Context, h *Hive) error
-	// Delete soft-deletes the hive (sets deleted_at) rather than removing
-	// the row, per the project's synchronizable-entity plan.
-	Delete(ctx context.Context, userID, hiveID uuid.UUID) error
+	// ListByApiary returns every hive under apiaryID belonging to userID,
+	// including ones a prior soft-delete already marked gone (deliberately
+	// not filtered by deleted_at). Used only to drive DeleteByApiary's
+	// cascade, which needs to find and purge every remaining artifact
+	// under an apiary being deleted - not a user-facing list endpoint, so
+	// it's unpaginated.
+	ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*Hive, error)
+	// HardDelete physically removes the hive row. There is no soft-delete
+	// path left on this port: a hive delete is always a full cascade (see
+	// application/hive.Service.Delete), called only after
+	// inspection-service and media-service have already deleted
+	// everything that belonged to this hive.
+	HardDelete(ctx context.Context, userID, hiveID uuid.UUID) error
 }

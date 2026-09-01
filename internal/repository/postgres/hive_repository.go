@@ -120,16 +120,40 @@ func (r *HiveRepository) Update(ctx context.Context, h *hive.Hive) error {
 	return nil
 }
 
-func (r *HiveRepository) Delete(ctx context.Context, userID, hiveID uuid.UUID) error {
+func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*hive.Hive, error) {
 	const q = `
-		UPDATE hives
-		SET deleted_at = now()
-		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		SELECT id, apiary_id, user_id, name, location, notes, created_at, updated_at, deleted_at
+		FROM hives
+		WHERE apiary_id = $1 AND user_id = $2
 	`
+
+	rows, err := r.db.Query(ctx, q, apiaryID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list hives by apiary: %w", err)
+	}
+	defer rows.Close()
+
+	hives := []*hive.Hive{}
+	for rows.Next() {
+		var h hive.Hive
+		if err := rows.Scan(&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Location, &h.Notes, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt); err != nil {
+			return nil, fmt.Errorf("postgres: scan hive: %w", err)
+		}
+		hives = append(hives, &h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: list hives by apiary: %w", err)
+	}
+
+	return hives, nil
+}
+
+func (r *HiveRepository) HardDelete(ctx context.Context, userID, hiveID uuid.UUID) error {
+	const q = `DELETE FROM hives WHERE id = $1 AND user_id = $2`
 
 	tag, err := r.db.Exec(ctx, q, hiveID, userID)
 	if err != nil {
-		return fmt.Errorf("postgres: delete hive: %w", err)
+		return fmt.Errorf("postgres: hard delete hive: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return hive.ErrNotFound
