@@ -40,8 +40,11 @@ func NewRouter(
 		r.Get("/{hiveID}", hiveHandler.Get)
 		r.Put("/{hiveID}", hiveHandler.Update)
 		r.Delete("/{hiveID}", hiveHandler.Delete)
-		// Internal cascade primitive: called by apiary-service when it
-		// deletes an apiary, forwarding the caller's own access token.
+		// Internal-only: called by apiary-service when it deletes an
+		// apiary, forwarding the caller's own access token. This route
+		// group's RequireAuth can't distinguish that from a genuine
+		// end-user call - beebase-gateway is what actually blocks external
+		// reachability, by never proxying this exact method+path.
 		r.Delete("/", hiveHandler.DeleteByApiary)
 	})
 
