@@ -17,13 +17,17 @@ info:
     Photos and other files are uploaded directly to media-service (see its
     OpenAPI spec) independently of any hive - upload doesn't require one
     to exist yet, and this service never receives file bytes. `images` on
-    a hive is the set of media IDs media-service currently has attached to
-    it - read-only on every response, and settable only via PUT: an ID
-    already attached here stays; an ID for the caller's own not-yet-
-    attached upload gets linked to this hive on the fly; anything else
-    (unknown, someone else's, or already attached elsewhere - a media
-    item's owner is fixed the first time it's attached and can't be moved)
-    is rejected.
+    a hive is the set of media IDs this service itself stores and returns
+    - the source of truth for what's referenced, not a media-service
+    round trip - settable via POST (reference immediately on creation) or
+    PUT (replace the set wholesale). Every id is verified against
+    media-service (a plain ownership check, not a mutating call) before
+    being accepted; an id that doesn't exist, was deleted, or belongs to
+    a different user is rejected. There's no exclusivity between
+    apiaries/hives - the same media id may be referenced by more than
+    one. Removing an id from `images` only drops the reference; it does
+    not delete the underlying file (deleting the whole hive does delete
+    every file it references).
   version: 0.1.0
 servers:
   - url: http://localhost:8080
@@ -76,7 +80,12 @@ paths:
       description: >
         Rejected with 404 apiary_not_found if apiary_id doesn't exist or
         doesn't belong to the caller — verified live against
-        apiary-service, not trusted from the request.
+        apiary-service, not trusted from the request. images, if given, is
+        referenced immediately: each id is verified against media-service
+        (it must belong to the caller) before the hive is created - an
+        unknown id or someone else's is rejected and no hive is created.
+        Omitting images (or sending an empty array) creates a hive with no
+        photos; more can be added afterward via PUT.
       requestBody:
         required: true
         content:
@@ -110,10 +119,10 @@ paths:
       description: >
         Returns only hives owned by the caller — never another user's — as
         a page of results. Omitting page/limit falls back to page=1,
-        limit=20. Each item's `images` is always an empty array: listing
-        deliberately skips the per-hive media-service round trip that
-        populating it for every item on the page would require. Fetch
-        GET /hives/{hiveId} for a specific hive's actual images.
+        limit=20. Each item's `images` reflects that hive's actual
+        attached media ids - it's a local column now, not a per-item
+        media-service round trip, so listing carries no extra cost to
+        include it.
       parameters:
         - name: page
           in: query
@@ -160,8 +169,7 @@ paths:
       description: >
         Returns 404 both when hiveId doesn't exist and when it belongs to
         a different user — the two cases are indistinguishable to the
-        caller, by design. `images` reflects media-service's current
-        state at the time of the call.
+        caller, by design.
       responses:
         "200":
           description: The hive.
@@ -192,15 +200,11 @@ paths:
         notes. A hive can't be moved to a different apiary —
         there's no apiary_id here. `images` is the one field exempt from
         full-replacement semantics: omitting it (or sending JSON null)
-        leaves currently attached media untouched, while sending an array
-        (including an empty one) replaces the attached set exactly -
-        attaching whichever of the caller's own not-yet-attached uploads
-        are newly listed (linked to this hive on the fly, via
-        media-service) and detaching whatever isn't listed. An ID that
-        doesn't identify either media already attached here or the
-        caller's own not-yet-attached upload is rejected (a media item's
-        owner is fixed the first time it's attached and can't be moved
-        between hives or apiaries).
+        leaves the current set untouched, while sending an array
+        (including an empty one) replaces it wholesale - every id is
+        verified against media-service (it must belong to the caller)
+        before anything changes. Dropping an id from the list only
+        removes the reference; it does not delete the underlying file.
       requestBody:
         required: true
         content:
@@ -215,8 +219,7 @@ paths:
         "400":
           description: >
             hiveId is not a valid UUID, the request failed validation, or
-            images contains an ID that doesn't identify media already
-            attached to this hive.
+            images contains an id that doesn't belong to the caller.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
@@ -275,6 +278,14 @@ components:
         apiary_id: { type: string, format: uuid, description: Must be an apiary owned by the caller. }
         name: { type: string, maxLength: 200 }
         notes: { type: string, maxLength: 2000 }
+        images:
+          type: array
+          items: { type: string, format: uuid }
+          description: >
+            Media IDs (returned by media-service's upload endpoint) to
+            reference immediately. Each must belong to the caller; omit
+            this field (or send an empty array) to create a hive with no
+            photos.
 
     UpdateHiveRequest:
       type: object
@@ -287,11 +298,11 @@ components:
           items: { type: string, format: uuid }
           description: >
             The desired final set of media IDs (returned by media-service's
-            upload endpoint) attached to this hive. Omit this field (or
-            send null) to leave currently attached media untouched; send an
-            array (including an empty one) to replace the attached set
-            exactly. Each ID must already be attached to this hive, or be
-            the caller's own not-yet-attached upload (linked on the fly).
+            upload endpoint) referenced by this hive. Omit this field (or
+            send null) to leave the current set untouched; send an array
+            (including an empty one) to replace it wholesale. Each id must
+            belong to the caller. Dropping an id only removes the
+            reference - it does not delete the underlying file.
 
     HiveResponse:
       type: object
@@ -304,8 +315,9 @@ components:
           type: array
           items: { type: string, format: uuid }
           description: >
-            The IDs of media currently attached to this hive. Always empty
-            on a list item (see GET /hives) and on a freshly created hive.
+            The IDs of media currently attached to this hive, in every
+            response including list items (see GET /hives) - never null,
+            empty when there are no photos.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -359,11 +371,11 @@ components:
                 human-readable message) meant to be localized client-side.
                 "images" carries "images_invalid" when an entry isn't a
                 well-formed UUID, or "image_not_found" when an entry is a
-                well-formed UUID that can't be attached to this hive
-                (whether because it doesn't exist, belongs to a different
-                user, or is already attached to a different owner - these
-                are deliberately indistinguishable, the same
-                non-leaking convention hive_not_found already follows).
+                well-formed UUID that doesn't belong to the caller
+                (whether because it doesn't exist, was deleted, or
+                belongs to a different user - these are deliberately
+                indistinguishable, the same non-leaking convention
+                hive_not_found already follows).
               additionalProperties:
                 type: string
                 enum:

@@ -135,7 +135,7 @@ func (f *fakeApiaryVerifier) Verify(_ context.Context, accessToken string, apiar
 	return apphive.ErrApiaryNotFound
 }
 
-// --- fake inspection/media deleters ---
+// --- fake inspection deleter ---
 
 // fakeInspectionDeleter simulates inspection-service's DeleteByHive: it
 // records every hiveID it was asked to delete, and can be configured to
@@ -176,114 +176,83 @@ func (f *fakeInspectionDeleter) wasDeleted(hiveID uuid.UUID) bool {
 	return false
 }
 
-// fakeMediaDeleter is the media-service equivalent of
-// fakeInspectionDeleter. It also stands in for the rest of
-// application/hive.MediaClient: attached tracks which media IDs are
-// attached to which hive (seeded via attach(), as if already linked), and
-// unattached tracks the caller's own uploads that exist but aren't linked
-// to anything yet (seeded via uploadUnattached()) - together enough to
-// exercise Update's images reconciliation, including attaching a fresh
-// upload, without a real media-service.
-type fakeMediaDeleter struct {
+// fakeMediaClient stands in for application/hive.MediaClient: ownedIDs is
+// the set of media ids VerifyOwnership will accept as belonging to the
+// caller (seeded via own()), and deletedIDs records every id ever passed
+// to DeleteByIDs, in calls not suppressed by failDeleteWith.
+type fakeMediaClient struct {
 	mu         sync.Mutex
-	deleted    []uuid.UUID
-	failFor    map[uuid.UUID]error
-	attached   map[uuid.UUID]uuid.UUID // mediaID -> hiveID
-	unattached map[uuid.UUID]bool      // mediaID -> exists, belongs to the caller, not yet attached
+	ownedIDs   map[uuid.UUID]bool
+	deletedIDs []uuid.UUID
+	deleteErr  error
 }
 
-func newFakeMediaDeleter() *fakeMediaDeleter {
-	return &fakeMediaDeleter{
-		failFor:    map[uuid.UUID]error{},
-		attached:   map[uuid.UUID]uuid.UUID{},
-		unattached: map[uuid.UUID]bool{},
+func newFakeMediaClient() *fakeMediaClient {
+	return &fakeMediaClient{ownedIDs: map[uuid.UUID]bool{}}
+}
+
+// own registers each of ids as belonging to the caller, so VerifyOwnership
+// accepts it.
+func (f *fakeMediaClient) own(ids ...uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range ids {
+		f.ownedIDs[id] = true
 	}
 }
 
-func (f *fakeMediaDeleter) failOn(hiveID uuid.UUID, err error) {
-	f.failFor[hiveID] = err
-}
-
-// attach registers mediaID as already attached to hiveID, as if it had
-// been uploaded and linked there.
-func (f *fakeMediaDeleter) attach(hiveID, mediaID uuid.UUID) {
+// failDeleteWith makes every subsequent DeleteByIDs call fail with err,
+// simulating media-service being unreachable.
+func (f *fakeMediaClient) failDeleteWith(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.attached[mediaID] = hiveID
+	f.deleteErr = err
 }
 
-// uploadUnattached registers mediaID as an existing upload belonging to
-// the caller, not yet attached to anything - the fixture Update's images
-// reconciliation needs to prove it can attach a fresh upload, not just
-// keep one already linked.
-func (f *fakeMediaDeleter) uploadUnattached(mediaID uuid.UUID) {
+func (f *fakeMediaClient) VerifyOwnership(_ context.Context, _ string, ids []uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.unattached[mediaID] = true
-}
-
-func (f *fakeMediaDeleter) DeleteByOwner(_ context.Context, _ string, hiveID uuid.UUID) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err, ok := f.failFor[hiveID]; ok {
-		return err
+	for _, id := range ids {
+		if !f.ownedIDs[id] {
+			return apphive.ErrImageNotFound
+		}
 	}
-	f.deleted = append(f.deleted, hiveID)
 	return nil
 }
 
-func (f *fakeMediaDeleter) wasDeleted(hiveID uuid.UUID) bool {
+func (f *fakeMediaClient) DeleteByIDs(_ context.Context, _ string, ids []uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, id := range f.deleted {
-		if id == hiveID {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedIDs = append(f.deletedIDs, ids...)
+	return nil
+}
+
+func (f *fakeMediaClient) wasDeleted(id uuid.UUID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, d := range f.deletedIDs {
+		if d == id {
 			return true
 		}
 	}
 	return false
 }
 
-func (f *fakeMediaDeleter) ListAttached(_ context.Context, _ string, hiveID uuid.UUID) ([]uuid.UUID, error) {
+func (f *fakeMediaClient) deleteCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var ids []uuid.UUID
-	for mediaID, owner := range f.attached {
-		if owner == hiveID {
-			ids = append(ids, mediaID)
-		}
-	}
-	return ids, nil
-}
-
-func (f *fakeMediaDeleter) Attach(_ context.Context, _ string, hiveID, mediaID uuid.UUID) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if owner, ok := f.attached[mediaID]; ok {
-		if owner == hiveID {
-			return nil // idempotent replay
-		}
-		return apphive.ErrImageNotFound // attached to a different owner
-	}
-	if !f.unattached[mediaID] {
-		return apphive.ErrImageNotFound // unknown, or not the caller's
-	}
-	delete(f.unattached, mediaID)
-	f.attached[mediaID] = hiveID
-	return nil
-}
-
-func (f *fakeMediaDeleter) Detach(_ context.Context, _ string, mediaID uuid.UUID) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.attached, mediaID)
-	return nil
+	return len(f.deletedIDs)
 }
 
 // newService builds a Service backed by repo and apiaries, with
-// always-succeeding fake inspection/media deleters - the right default
-// for every test that isn't specifically exercising the delete cascade.
+// always-succeeding fake inspection/media clients - the right default
+// for every test that isn't specifically exercising the delete cascade
+// or images.
 func newService(repo *fakeRepo, apiaries *fakeApiaryVerifier) *apphive.Service {
-	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeMediaDeleter())
+	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeMediaClient())
 }
 
 // --- tests ---
@@ -309,6 +278,9 @@ func TestCreate_Success(t *testing.T) {
 	}
 	if h.ApiaryID != apiaryID {
 		t.Errorf("ApiaryID = %s, want %s", h.ApiaryID, apiaryID)
+	}
+	if len(h.Images) != 0 {
+		t.Errorf("Images = %v, want empty", h.Images)
 	}
 }
 
@@ -343,6 +315,76 @@ func TestCreate_UnknownApiary(t *testing.T) {
 	}
 }
 
+// TestCreate_WithImages_Success proves a hive can be created with photos
+// already referenced, without a separate PUT: ownership of every id is
+// verified against media-service before the hive is persisted.
+func TestCreate_WithImages_Success(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	media := newFakeMediaClient()
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+	photo1 := uuid.New()
+	photo2 := uuid.New()
+	media.own(photo1, photo2)
+
+	h, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+		Images:   []uuid.UUID{photo1, photo2, photo1}, // duplicated on purpose
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(h.Images) != 2 || h.Images[0] != photo1 || h.Images[1] != photo2 {
+		t.Fatalf("Images = %v, want [%s, %s] deduplicated", h.Images, photo1, photo2)
+	}
+
+	got, err := repo.GetByID(context.Background(), userID, h.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(got.Images) != 2 {
+		t.Fatalf("persisted Images = %v, want 2 entries", got.Images)
+	}
+}
+
+// TestCreate_WithImages_RejectsForeignMedia proves Create validates
+// ownership of every referenced image before persisting anything - since
+// verification happens first, a rejected image means no hive is ever
+// created (no rollback needed, unlike the old attach-after-insert design).
+func TestCreate_WithImages_RejectsForeignMedia(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	media := newFakeMediaClient() // foreign is deliberately never own()'d
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+	foreign := uuid.New()
+
+	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+		Images:   []uuid.UUID{foreign},
+	})
+	if !errors.Is(err, apphive.ErrImageNotFound) {
+		t.Fatalf("Create with foreign media: got %v, want ErrImageNotFound", err)
+	}
+
+	list, _, err := repo.ListByUser(context.Background(), userID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit})
+	if err != nil {
+		t.Fatalf("ListByUser: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("hive was persisted despite a rejected image: %v", list)
+	}
+}
+
 func TestGet_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	svc := newService(newFakeRepo(), verifier)
@@ -356,7 +398,7 @@ func TestGet_Success(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	got, _, err := svc.Get(context.Background(), userID, "token", created.ID)
+	got, err := svc.Get(context.Background(), userID, created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -368,7 +410,7 @@ func TestGet_Success(t *testing.T) {
 func TestGet_NotFound(t *testing.T) {
 	svc := newService(newFakeRepo(), newFakeApiaryVerifier())
 
-	_, _, err := svc.Get(context.Background(), uuid.New(), "token", uuid.New())
+	_, err := svc.Get(context.Background(), uuid.New(), uuid.New())
 	if !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get with unknown id: got %v, want ErrNotFound", err)
 	}
@@ -390,7 +432,7 @@ func TestGet_WrongOwner_ReturnsNotFound(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, _, err = svc.Get(context.Background(), other, "token", created.ID)
+	_, err = svc.Get(context.Background(), other, created.ID)
 	if !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get by non-owner: got %v, want ErrNotFound", err)
 	}
@@ -510,7 +552,7 @@ func TestUpdate_Success(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	updated, _, err := svc.Update(context.Background(), userID, "token", created.ID, apphive.UpdateInput{
+	updated, err := svc.Update(context.Background(), userID, "token", created.ID, apphive.UpdateInput{
 		Name:  "New name",
 		Notes: "New notes",
 	})
@@ -539,12 +581,12 @@ func TestUpdate_WrongOwner_ReturnsNotFound(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, _, err = svc.Update(context.Background(), other, "token", created.ID, apphive.UpdateInput{Name: "Hijacked"})
+	_, err = svc.Update(context.Background(), other, "token", created.ID, apphive.UpdateInput{Name: "Hijacked"})
 	if !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Update by non-owner: got %v, want ErrNotFound", err)
 	}
 
-	got, _, err := svc.Get(context.Background(), owner, "token", created.ID)
+	got, err := svc.Get(context.Background(), owner, created.ID)
 	if err != nil {
 		t.Fatalf("Get after failed hijack attempt: %v", err)
 	}
@@ -553,105 +595,151 @@ func TestUpdate_WrongOwner_ReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestUpdate_ImagesNil_LeavesAttachedMediaUntouched proves that omitting
-// Images from an update (the nil case) is a no-op on media-service: a
-// client updating just the name must never accidentally detach every
-// photo.
-func TestUpdate_ImagesNil_LeavesAttachedMediaUntouched(t *testing.T) {
+// TestUpdate_ImagesNil_LeavesImagesUntouched proves that omitting Images
+// from an update (the nil case) is a no-op: a client updating just the
+// name must never accidentally clear every photo reference.
+func TestUpdate_ImagesNil_LeavesImagesUntouched(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	mediaID := uuid.New()
+	media.own(mediaID)
 
-	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Hive 1"})
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+		Images:   []uuid.UUID{mediaID},
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	mediaID := uuid.New()
-	media.attach(created.ID, mediaID)
 
-	_, images, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{Name: "Renamed"})
+	updated, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{Name: "Renamed"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if len(images) != 1 || images[0] != mediaID {
-		t.Fatalf("images = %v, want [%s] (untouched)", images, mediaID)
+	if len(updated.Images) != 1 || updated.Images[0] != mediaID {
+		t.Fatalf("Images = %v, want [%s] (untouched)", updated.Images, mediaID)
 	}
 }
 
-// TestUpdate_ImagesPrunesUnwanted proves that an update whose images list
-// keeps only some of the currently attached media detaches the rest,
-// without erroring on the ones that stay, and that a duplicated ID in the
-// request doesn't cause redundant work.
-func TestUpdate_ImagesPrunesUnwanted(t *testing.T) {
+// TestUpdate_ImagesEmpty_ClearsReferencesWithoutDeletingFiles proves that
+// explicitly sending an empty images list (as opposed to omitting the
+// field) clears the hive's reference list - but, critically, does NOT
+// delete the underlying media file: removing a reference and deleting a
+// file are two separate actions now (the file stays until something
+// explicitly calls DELETE /media/{id}, or the whole hive is deleted).
+func TestUpdate_ImagesEmpty_ClearsReferencesWithoutDeletingFiles(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	mediaID := uuid.New()
+	media.own(mediaID)
 
-	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Hive 1"})
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+		Images:   []uuid.UUID{mediaID},
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+
+	empty := []uuid.UUID{}
+	updated, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
+		Name:   "Renamed",
+		Images: &empty,
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(updated.Images) != 0 {
+		t.Fatalf("Images = %v, want empty", updated.Images)
+	}
+	if media.wasDeleted(mediaID) {
+		t.Error("removing an image reference must not delete the underlying file")
+	}
+}
+
+// TestUpdate_ImagesReplacedWholesale proves an update's images list fully
+// replaces the previous one (deduplicated) - the dropped id's file
+// survives untouched, since remove-from-hive and delete-the-file are
+// separate actions now.
+func TestUpdate_ImagesReplacedWholesale(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	media := newFakeMediaClient()
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
 	keep := uuid.New()
 	drop := uuid.New()
-	media.attach(created.ID, keep)
-	media.attach(created.ID, drop)
+	media.own(keep, drop)
+
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+		Images:   []uuid.UUID{keep, drop},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 
 	desired := []uuid.UUID{keep, keep} // duplicated on purpose
-	_, images, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
+	updated, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
 		Name:   "Renamed",
 		Images: &desired,
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if len(images) != 1 || images[0] != keep {
-		t.Fatalf("images = %v, want [%s] deduplicated", images, keep)
+	if len(updated.Images) != 1 || updated.Images[0] != keep {
+		t.Fatalf("Images = %v, want [%s] deduplicated", updated.Images, keep)
 	}
-	if _, ok := media.attached[drop]; ok {
-		t.Error("drop should have been detached")
-	}
-	if _, ok := media.attached[keep]; !ok {
-		t.Error("keep should still be attached")
+	if media.wasDeleted(drop) {
+		t.Error("drop's file must survive - dropping a reference doesn't delete it")
 	}
 }
 
-// TestUpdate_ImagesRejectsForeignMedia proves that an update can't attach
-// a media ID that isn't already this hive's own media - one belonging to
-// a different hive (even the same user's) is rejected, and, critically,
-// no detach happens and the hive's other fields are left unchanged.
+// TestUpdate_ImagesRejectsForeignMedia proves that an update can't
+// reference a media id that isn't the caller's own, and, critically,
+// leaves the hive's images and other fields completely unchanged.
 func TestUpdate_ImagesRejectsForeignMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient() // foreign is deliberately never own()'d
 	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	kept := uuid.New()
+	media.own(kept)
 
-	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Hive 1"})
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+		Images:   []uuid.UUID{kept},
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	kept := uuid.New()
-	media.attach(created.ID, kept)
 
-	otherHive := uuid.New()
 	foreign := uuid.New()
-	media.attach(otherHive, foreign)
-
 	desired := []uuid.UUID{foreign}
-	_, _, err = svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
+	_, err = svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
 		Name:   "Renamed",
 		Images: &desired,
 	})
@@ -659,9 +747,6 @@ func TestUpdate_ImagesRejectsForeignMedia(t *testing.T) {
 		t.Fatalf("Update with foreign media: got %v, want ErrImageNotFound", err)
 	}
 
-	if _, ok := media.attached[kept]; !ok {
-		t.Error("existing media must not be detached when validation fails first")
-	}
 	got, err := repo.GetByID(context.Background(), userID, created.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
@@ -669,17 +754,18 @@ func TestUpdate_ImagesRejectsForeignMedia(t *testing.T) {
 	if got.Name != "Hive 1" {
 		t.Errorf("Name = %q after rejected update, want unchanged %q", got.Name, "Hive 1")
 	}
+	if len(got.Images) != 1 || got.Images[0] != kept {
+		t.Errorf("Images = %v after rejected update, want unchanged [%s]", got.Images, kept)
+	}
 }
 
-// TestUpdate_ImagesAttachesFreshUpload proves media-service's decoupled
-// upload flow end to end from hive-service's side: an ID for media the
-// caller uploaded but never attached to anything can be named in
-// images and gets linked to this hive, not just IDs already attached
-// here.
-func TestUpdate_ImagesAttachesFreshUpload(t *testing.T) {
+// TestUpdate_ImagesAcceptsNewlyOwnedMedia proves an id the caller uploaded
+// after this hive was created can be added via a plain Update, once
+// media-service confirms it belongs to them.
+func TestUpdate_ImagesAcceptsNewlyOwnedMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
@@ -691,21 +777,18 @@ func TestUpdate_ImagesAttachesFreshUpload(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	fresh := uuid.New()
-	media.uploadUnattached(fresh)
+	media.own(fresh)
 
 	desired := []uuid.UUID{fresh}
-	_, images, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
+	updated, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
 		Name:   "Renamed",
 		Images: &desired,
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if len(images) != 1 || images[0] != fresh {
-		t.Fatalf("images = %v, want [%s]", images, fresh)
-	}
-	if owner, ok := media.attached[fresh]; !ok || owner != created.ID {
-		t.Errorf("fresh upload was not attached to the hive: attached=%v ok=%v", owner, ok)
+	if len(updated.Images) != 1 || updated.Images[0] != fresh {
+		t.Fatalf("Images = %v, want [%s]", updated.Images, fresh)
 	}
 }
 
@@ -726,7 +809,7 @@ func TestDelete_Success(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, _, err := svc.Get(context.Background(), userID, "token", created.ID); !errors.Is(err, hive.ErrNotFound) {
+	if _, err := svc.Get(context.Background(), userID, created.ID); !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get after Delete: got %v, want ErrNotFound", err)
 	}
 }
@@ -749,23 +832,32 @@ func TestDelete_WrongOwner_ReturnsNotFoundAndDoesNotDelete(t *testing.T) {
 		t.Fatalf("Delete by non-owner: got %v, want ErrNotFound", err)
 	}
 
-	if _, _, err := svc.Get(context.Background(), owner, "token", created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), owner, created.ID); err != nil {
 		t.Fatalf("owner's hive should survive a failed delete attempt by another user: %v", err)
 	}
 }
 
-func TestDelete_CascadesInspectionsAndMediaBeforeHive(t *testing.T) {
+// TestDelete_CascadesInspectionsAndImagesBeforeHive proves the full
+// cascade: inspection-service is asked to delete first, then every media
+// file this hive itself references is hard-deleted, then the hive itself.
+func TestDelete_CascadesInspectionsAndImagesBeforeHive(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, inspections, media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	photo := uuid.New()
+	media.own(photo)
 
-	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Gone soon"})
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Gone soon",
+		Images:   []uuid.UUID{photo},
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -777,11 +869,40 @@ func TestDelete_CascadesInspectionsAndMediaBeforeHive(t *testing.T) {
 	if !inspections.wasDeleted(created.ID) {
 		t.Error("Delete did not cascade to inspection-service")
 	}
-	if !media.wasDeleted(created.ID) {
-		t.Error("Delete did not cascade to media-service")
+	if !media.wasDeleted(photo) {
+		t.Error("Delete did not cascade to media-service for the hive's own image")
 	}
-	if _, _, err := svc.Get(context.Background(), userID, "token", created.ID); !errors.Is(err, hive.ErrNotFound) {
+	if _, err := svc.Get(context.Background(), userID, created.ID); !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get after Delete: got %v, want ErrNotFound", err)
+	}
+}
+
+// TestDelete_SkipsMediaCallWhenNoImages proves Delete never bothers
+// calling media-service for a hive with no images - even one configured
+// to fail, proving the call is genuinely skipped, not just coincidentally
+// successful.
+func TestDelete_SkipsMediaCallWhenNoImages(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	inspections := newFakeInspectionDeleter()
+	media := newFakeMediaClient()
+	media.failDeleteWith(errors.New("should never be called"))
+	svc := apphive.NewService(repo, verifier, inspections, media)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "No photos"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := svc.Delete(context.Background(), userID, token, created.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if media.deleteCallCount() != 0 {
+		t.Error("DeleteByIDs was called even though the hive had no images")
 	}
 }
 
@@ -793,14 +914,20 @@ func TestDelete_AbortsOnInspectionDeleteFailure_HiveSurvives(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, inspections, media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	photo := uuid.New()
+	media.own(photo)
 
-	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Survives"})
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Survives",
+		Images:   []uuid.UUID{photo},
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -811,10 +938,10 @@ func TestDelete_AbortsOnInspectionDeleteFailure_HiveSurvives(t *testing.T) {
 		t.Fatalf("Delete: got %v, want %v", err, boom)
 	}
 
-	if media.wasDeleted(created.ID) {
+	if media.deleteCallCount() != 0 {
 		t.Error("media-service was called even though inspection-service failed first")
 	}
-	if _, _, err := svc.Get(context.Background(), userID, "token", created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), userID, created.ID); err != nil {
 		t.Fatalf("hive should survive when inspection-service fails: %v", err)
 	}
 }
@@ -827,19 +954,25 @@ func TestDelete_AbortsOnMediaDeleteFailure_HiveSurvives(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, inspections, media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	photo := uuid.New()
+	media.own(photo)
 
-	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Survives"})
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Survives",
+		Images:   []uuid.UUID{photo},
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	boom := errors.New("media-service unreachable")
-	media.failOn(created.ID, boom)
+	media.failDeleteWith(boom)
 
 	if err := svc.Delete(context.Background(), userID, token, created.ID); !errors.Is(err, boom) {
 		t.Fatalf("Delete: got %v, want %v", err, boom)
@@ -848,7 +981,7 @@ func TestDelete_AbortsOnMediaDeleteFailure_HiveSurvives(t *testing.T) {
 	if !inspections.wasDeleted(created.ID) {
 		t.Error("inspection-service should have already been called before media-service failed")
 	}
-	if _, _, err := svc.Get(context.Background(), userID, "token", created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), userID, created.ID); err != nil {
 		t.Fatalf("hive should survive when media-service fails: %v", err)
 	}
 }
@@ -857,22 +990,28 @@ func TestDeleteByApiary_CascadesEveryHive(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, inspections, media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	otherApiaryID := uuid.New()
 	token := "token"
 	verifier.allow(token, apiaryID)
+	photo1 := uuid.New()
+	photo2 := uuid.New()
+	media.own(photo1, photo2)
 
-	var ids []uuid.UUID
-	for _, name := range []string{"H1", "H2"} {
-		created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: name})
-		if err != nil {
-			t.Fatalf("create %s: %v", name, err)
-		}
-		ids = append(ids, created.ID)
+	created1, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H1", Images: []uuid.UUID{photo1}})
+	if err != nil {
+		t.Fatalf("create H1: %v", err)
 	}
+	created2, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H2", Images: []uuid.UUID{photo2}})
+	if err != nil {
+		t.Fatalf("create H2: %v", err)
+	}
+	ids := []uuid.UUID{created1.ID, created2.ID}
+	photos := []uuid.UUID{photo1, photo2}
+
 	// A hive under a different apiary must survive.
 	verifier.allow("other-token", otherApiaryID)
 	keep, err := svc.Create(context.Background(), userID, "other-token", apphive.CreateInput{ApiaryID: otherApiaryID, Name: "Keep"})
@@ -885,14 +1024,19 @@ func TestDeleteByApiary_CascadesEveryHive(t *testing.T) {
 	}
 
 	for _, id := range ids {
-		if _, _, err := svc.Get(context.Background(), userID, "token", id); !errors.Is(err, hive.ErrNotFound) {
+		if _, err := svc.Get(context.Background(), userID, id); !errors.Is(err, hive.ErrNotFound) {
 			t.Errorf("hive %s survived DeleteByApiary: got %v, want ErrNotFound", id, err)
 		}
-		if !inspections.wasDeleted(id) || !media.wasDeleted(id) {
-			t.Errorf("hive %s: cascade did not reach inspection-service/media-service", id)
+		if !inspections.wasDeleted(id) {
+			t.Errorf("hive %s: cascade did not reach inspection-service", id)
 		}
 	}
-	if _, _, err := svc.Get(context.Background(), userID, "token", keep.ID); err != nil {
+	for _, photo := range photos {
+		if !media.wasDeleted(photo) {
+			t.Errorf("image %s: cascade did not reach media-service", photo)
+		}
+	}
+	if _, err := svc.Get(context.Background(), userID, keep.ID); err != nil {
 		t.Fatalf("hive under a different apiary should survive: %v", err)
 	}
 }
@@ -906,7 +1050,7 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
-	media := newFakeMediaDeleter()
+	media := newFakeMediaClient()
 	svc := apphive.NewService(repo, verifier, inspections, media)
 	userID := uuid.New()
 	apiaryID := uuid.New()
@@ -948,6 +1092,6 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 }
 
 func errorsIsNotFound(svc *apphive.Service, userID, hiveID uuid.UUID) bool {
-	_, _, err := svc.Get(context.Background(), userID, "token", hiveID)
+	_, err := svc.Get(context.Background(), userID, hiveID)
 	return errors.Is(err, hive.ErrNotFound)
 }

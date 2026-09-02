@@ -27,11 +27,11 @@ func NewHiveRepository(db Querier) *HiveRepository {
 
 func (r *HiveRepository) Create(ctx context.Context, h *hive.Hive) error {
 	const q = `
-		INSERT INTO hives (id, apiary_id, user_id, name, notes, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO hives (id, apiary_id, user_id, name, notes, images, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
-	_, err := r.db.Exec(ctx, q, h.ID, h.ApiaryID, h.UserID, h.Name, h.Notes, h.CreatedAt, h.UpdatedAt)
+	_, err := r.db.Exec(ctx, q, h.ID, h.ApiaryID, h.UserID, h.Name, h.Notes, images(h.Images), h.CreatedAt, h.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("postgres: create hive: %w", err)
 	}
@@ -41,7 +41,7 @@ func (r *HiveRepository) Create(ctx context.Context, h *hive.Hive) error {
 
 func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive, error) {
 	const q = `
-		SELECT id, apiary_id, user_id, name, notes, created_at, updated_at, deleted_at
+		SELECT id, apiary_id, user_id, name, notes, images, created_at, updated_at, deleted_at
 		FROM hives
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
 	`
@@ -49,7 +49,7 @@ func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) 
 	var h hive.Hive
 
 	err := r.db.QueryRow(ctx, q, hiveID, userID).Scan(
-		&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Notes, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt,
+		&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Notes, &h.Images, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -74,7 +74,7 @@ func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pag
 	}
 
 	const q = `
-		SELECT id, apiary_id, user_id, name, notes, created_at, updated_at, deleted_at
+		SELECT id, apiary_id, user_id, name, notes, images, created_at, updated_at, deleted_at
 		FROM hives
 		WHERE user_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at ASC, id ASC
@@ -90,7 +90,7 @@ func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pag
 	hives := []*hive.Hive{}
 	for rows.Next() {
 		var h hive.Hive
-		if err := rows.Scan(&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Notes, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt); err != nil {
+		if err := rows.Scan(&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Notes, &h.Images, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt); err != nil {
 			return nil, 0, fmt.Errorf("postgres: scan hive: %w", err)
 		}
 		hives = append(hives, &h)
@@ -105,11 +105,11 @@ func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pag
 func (r *HiveRepository) Update(ctx context.Context, h *hive.Hive) error {
 	const q = `
 		UPDATE hives
-		SET name = $1, notes = $2, updated_at = $3
-		WHERE id = $4 AND user_id = $5 AND deleted_at IS NULL
+		SET name = $1, notes = $2, images = $3, updated_at = $4
+		WHERE id = $5 AND user_id = $6 AND deleted_at IS NULL
 	`
 
-	tag, err := r.db.Exec(ctx, q, h.Name, h.Notes, h.UpdatedAt, h.ID, h.UserID)
+	tag, err := r.db.Exec(ctx, q, h.Name, h.Notes, images(h.Images), h.UpdatedAt, h.ID, h.UserID)
 	if err != nil {
 		return fmt.Errorf("postgres: update hive: %w", err)
 	}
@@ -118,6 +118,15 @@ func (r *HiveRepository) Update(ctx context.Context, h *hive.Hive) error {
 	}
 
 	return nil
+}
+
+// images coalesces a nil slice to an empty one - the images column is
+// NOT NULL, and pgx would otherwise encode a nil Go slice as SQL NULL.
+func images(ids []uuid.UUID) []uuid.UUID {
+	if ids == nil {
+		return []uuid.UUID{}
+	}
+	return ids
 }
 
 func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*hive.Hive, error) {

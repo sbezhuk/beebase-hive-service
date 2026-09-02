@@ -61,17 +61,23 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	// Already validated as a well-formed UUID by CreateRequest.Validate.
 	apiaryID, _ := uuid.Parse(req.ApiaryID)
 
+	images := make([]uuid.UUID, len(req.Images))
+	for i, s := range req.Images {
+		images[i], _ = uuid.Parse(s) // already validated by req.Validate
+	}
+
 	created, err := h.service.Create(r.Context(), userID, token, apphive.CreateInput{
 		ApiaryID: apiaryID,
 		Name:     req.Name,
 		Notes:    req.Notes,
+		Images:   images,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusCreated, newResponse(created, nil))
+	httpx.WriteJSON(w, http.StatusCreated, newResponse(created))
 }
 
 // List handles GET /hives.
@@ -98,7 +104,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 // Get handles GET /hives/{hiveID}.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	userID, token, ok := h.requireAuth(w, r)
+	userID, ok := h.requireUserID(w, r)
 	if !ok {
 		return
 	}
@@ -108,13 +114,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	got, images, err := h.service.Get(r.Context(), userID, token, hiveID)
+	got, err := h.service.Get(r.Context(), userID, hiveID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newResponse(got, images))
+	httpx.WriteJSON(w, http.StatusOK, newResponse(got))
 }
 
 // Update handles PUT /hives/{hiveID}.
@@ -143,7 +149,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		images = &parsed
 	}
 
-	updated, resultImages, err := h.service.Update(r.Context(), userID, token, hiveID, apphive.UpdateInput{
+	updated, err := h.service.Update(r.Context(), userID, token, hiveID, apphive.UpdateInput{
 		Name:   req.Name,
 		Notes:  req.Notes,
 		Images: images,
@@ -153,7 +159,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newResponse(updated, resultImages))
+	httpx.WriteJSON(w, http.StatusOK, newResponse(updated))
 }
 
 // Delete handles DELETE /hives/{hiveID}. It cascades: every inspection and
@@ -203,14 +209,24 @@ func (h *Handler) DeleteByApiary(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// requireAuth returns the authenticated user's ID (from context, set by
-// httpmw.RequireAuth) and their raw access token (read back off the
-// request's own Authorization header, which RequireAuth already
-// validated) so it can be forwarded to apiary-service.
-func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) (uuid.UUID, string, bool) {
+func (h *Handler) requireUserID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	userID, ok := httpmw.UserIDFromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, httpmw.CodeMissingAuthorization, "missing authentication")
+		return uuid.Nil, false
+	}
+	return userID, true
+}
+
+// requireAuth returns the authenticated user's ID alongside their raw
+// access token (read back off the request's own Authorization header,
+// which RequireAuth already validated) so it can be forwarded to
+// apiary-service/media-service - to verify apiary ownership on Create, or
+// when Create/Update ask media-service to verify ownership of
+// newly-referenced images.
+func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) (uuid.UUID, string, bool) {
+	userID, ok := h.requireUserID(w, r)
+	if !ok {
 		return uuid.Nil, "", false
 	}
 

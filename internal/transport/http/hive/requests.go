@@ -57,6 +57,11 @@ type CreateRequest struct {
 	ApiaryID string `json:"apiary_id"`
 	Name     string `json:"name"`
 	Notes    string `json:"notes"`
+	// Images is the set of already-uploaded media ids to attach
+	// immediately - unlike UpdateRequest.Images, there's no "leave alone"
+	// case here since there's nothing to leave alone yet, so an absent/
+	// empty images just means no photos.
+	Images []string `json:"images"`
 }
 
 func (r *CreateRequest) Validate() map[string]string {
@@ -70,6 +75,8 @@ func (r *CreateRequest) Validate() map[string]string {
 			fields["apiary_id"] = CodeApiaryIDInvalid
 		}
 	}
+
+	validateImages(r.Images, fields)
 
 	return fields
 }
@@ -91,15 +98,19 @@ type UpdateRequest struct {
 
 func (r *UpdateRequest) Validate() map[string]string {
 	fields := validateFields(r.Name, r.Notes)
+	validateImages(r.Images, fields)
+	return fields
+}
 
-	for _, id := range r.Images {
+// validateImages checks that every id in images is a well-formed UUID,
+// setting fields["images"] on the first failure found.
+func validateImages(images []string, fields map[string]string) {
+	for _, id := range images {
 		if _, err := uuid.Parse(id); err != nil {
 			fields["images"] = CodeImagesInvalid
-			break
+			return
 		}
 	}
-
-	return fields
 }
 
 func validateFields(name, notes string) map[string]string {

@@ -46,6 +46,64 @@ func TestHiveRepository_CreateAndGet(t *testing.T) {
 	}
 }
 
+// TestHiveRepository_ImagesRoundTripThroughCreateAndUpdate proves the
+// images column - hive-service's own source of truth for attached media,
+// rather than a media-service round trip - survives Create, GetByID, and
+// Update intact, including a hive with none.
+func TestHiveRepository_ImagesRoundTripThroughCreateAndUpdate(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+
+	withoutImages := hive.New(userID, apiaryID, "No photos yet", "")
+	if err := repo.Create(ctx, withoutImages); err != nil {
+		t.Fatalf("Create without images: %v", err)
+	}
+	got, err := repo.GetByID(ctx, userID, withoutImages.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(got.Images) != 0 {
+		t.Fatalf("Images = %v, want empty (not null)", got.Images)
+	}
+
+	img1, img2 := uuid.New(), uuid.New()
+	withImages := hive.New(userID, apiaryID, "Has photos", "")
+	withImages.Images = []uuid.UUID{img1, img2}
+	if err := repo.Create(ctx, withImages); err != nil {
+		t.Fatalf("Create with images: %v", err)
+	}
+	got, err = repo.GetByID(ctx, userID, withImages.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(got.Images) != 2 {
+		t.Fatalf("Images = %v, want [%s, %s]", got.Images, img1, img2)
+	}
+
+	got.Images = []uuid.UUID{img1}
+	got.UpdatedAt = time.Now().UTC()
+	if err := repo.Update(ctx, got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	updated, err := repo.GetByID(ctx, userID, withImages.ID)
+	if err != nil {
+		t.Fatalf("GetByID after update: %v", err)
+	}
+	if len(updated.Images) != 1 || updated.Images[0] != img1 {
+		t.Fatalf("Images after update = %v, want [%s]", updated.Images, img1)
+	}
+}
+
 func TestHiveRepository_GetByID_NotFound(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()

@@ -19,6 +19,10 @@ type Hive struct {
 	ApiaryID uuid.UUID // immutable after creation
 	Name     string
 	Notes    string
+	// Images is the set of media ids attached to this hive - the source
+	// of truth for what's attached (nothing asks media-service on every
+	// read). Never nil; empty when there are no photos.
+	Images []uuid.UUID
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

@@ -67,6 +67,25 @@ func TestCreateRequest_Validate(t *testing.T) {
 	}
 }
 
+func TestCreateRequest_Validate_Images(t *testing.T) {
+	validApiaryID := uuid.New().String()
+
+	if fields := (&CreateRequest{ApiaryID: validApiaryID, Name: "ok", Images: nil}).Validate(); len(fields) != 0 {
+		t.Errorf("nil images: expected no errors, got %v", fields)
+	}
+	if fields := (&CreateRequest{ApiaryID: validApiaryID, Name: "ok", Images: []string{}}).Validate(); len(fields) != 0 {
+		t.Errorf("empty images: expected no errors, got %v", fields)
+	}
+	if fields := (&CreateRequest{ApiaryID: validApiaryID, Name: "ok", Images: []string{uuid.New().String()}}).Validate(); len(fields) != 0 {
+		t.Errorf("valid image id: expected no errors, got %v", fields)
+	}
+
+	fields := (&CreateRequest{ApiaryID: validApiaryID, Name: "ok", Images: []string{"not-a-uuid"}}).Validate()
+	if code := fields["images"]; code != CodeImagesInvalid {
+		t.Errorf("images code = %q, want %q", code, CodeImagesInvalid)
+	}
+}
+
 func TestUpdateRequest_Validate(t *testing.T) {
 	if fields := (&UpdateRequest{Name: "ok"}).Validate(); len(fields) != 0 {
 		t.Errorf("expected no errors, got %v", fields)

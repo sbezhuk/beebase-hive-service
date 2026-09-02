@@ -19,11 +19,11 @@ type Response struct {
 	UpdatedAt time.Time   `json:"updated_at"`
 }
 
-// newResponse builds a Response for h, with images as the IDs of media
-// currently attached to it. A nil images (e.g. a freshly created hive, or
-// a list item that deliberately skips the media-service round trip)
-// renders as "images": [] rather than null.
-func newResponse(h *hive.Hive, images []uuid.UUID) Response {
+// newResponse builds a Response for h. Images is read straight from h -
+// never nil (Hive.Images is always a real, possibly-empty slice) - so it
+// renders as "images": [] rather than null when there are no photos.
+func newResponse(h *hive.Hive) Response {
+	images := h.Images
 	if images == nil {
 		images = []uuid.UUID{}
 	}
@@ -38,15 +38,10 @@ func newResponse(h *hive.Hive, images []uuid.UUID) Response {
 	}
 }
 
-// newListResponse deliberately omits each item's attached media: fetching
-// it would mean one media-service round trip per hive in the page (up to
-// MaxLimit), an N+1 fan-out this endpoint doesn't pay. Clients that need
-// images for a listed hive can fetch it directly via GET /hives/{id}, or
-// query media-service's own list-by-owner endpoint.
 func newListResponse(hives []*hive.Hive) []Response {
 	out := make([]Response, len(hives))
 	for i, h := range hives {
-		out[i] = newResponse(h, nil)
+		out[i] = newResponse(h)
 	}
 	return out
 }

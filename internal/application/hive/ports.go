@@ -22,24 +22,23 @@ type InspectionDeleter interface {
 	DeleteByHive(ctx context.Context, accessToken string, hiveID uuid.UUID) error
 }
 
-// MediaClient is hive-service's dependency on media-service: deleting
-// every media item attached to a hive (as part of cascading a hive
-// delete), and reconciling which media stay attached to a hive on
-// update.
+// MediaClient is hive-service's dependency on media-service. media-service
+// has no notion of apiaries or hives at all - it only knows which files
+// belong to which uploader - so hive-service is fully self-sufficient for
+// "what's attached to this hive" (see Hive.Images, its own local column
+// and the sole source of truth for reads); this client exists purely to
+// verify a caller's ownership of newly-referenced media ids before
+// persisting them, and to hard-delete a hive's files when the hive itself
+// is cascade-deleted.
 type MediaClient interface {
-	// DeleteByOwner deletes every media item attached to a hive.
-	DeleteByOwner(ctx context.Context, accessToken string, hiveID uuid.UUID) error
-	// ListAttached returns the IDs of every media item currently
-	// attached to hiveID, belonging to whoever presented accessToken.
-	ListAttached(ctx context.Context, accessToken string, hiveID uuid.UUID) ([]uuid.UUID, error)
-	// Attach links mediaID to hiveID in media-service, on behalf of
-	// whoever presented accessToken. It succeeds (as a no-op) if mediaID
-	// is already attached to hiveID, and returns ErrImageNotFound if
-	// mediaID doesn't exist, doesn't belong to the caller, or is already
-	// attached to a different owner - a media item's owner is fixed the
-	// first time it's attached and can't be moved.
-	Attach(ctx context.Context, accessToken string, hiveID, mediaID uuid.UUID) error
-	// Detach removes a single media item, used to drop images an update
-	// no longer wants attached to this hive.
-	Detach(ctx context.Context, accessToken string, mediaID uuid.UUID) error
+	// VerifyOwnership confirms every id in ids belongs to whoever
+	// presented accessToken, by asking media-service directly - it's the
+	// only remaining source of truth for "does this media id exist and
+	// belong to me". Returns ErrImageNotFound if any id doesn't (unknown,
+	// deleted, or someone else's - indistinguishable, by the same
+	// non-leaking convention hive.ErrNotFound already follows).
+	VerifyOwnership(ctx context.Context, accessToken string, ids []uuid.UUID) error
+	// DeleteByIDs hard-deletes every media item in ids, used when the
+	// hive itself is being cascade-deleted.
+	DeleteByIDs(ctx context.Context, accessToken string, ids []uuid.UUID) error
 }
