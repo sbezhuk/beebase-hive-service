@@ -51,7 +51,7 @@ APIARY_ID=...  # an apiary that TOKEN's owner created via apiary-service
 
 curl -X POST http://localhost:8080/api/v1/hives \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"apiary_id\":\"$APIARY_ID\",\"name\":\"Hive 1\",\"location\":\"North corner\"}"
+  -d "{\"apiary_id\":\"$APIARY_ID\",\"name\":\"Hive 1\"}"
 
 curl http://localhost:8080/api/v1/hives -H "Authorization: Bearer $TOKEN"
 ```

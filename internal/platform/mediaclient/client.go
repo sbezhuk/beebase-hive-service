@@ -3,6 +3,7 @@
 package mediaclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -130,15 +131,26 @@ func (c *Client) getPage(ctx context.Context, accessToken, u string) (*mediaPage
 	return &body, nil
 }
 
-// VerifyAttached implements application/hive.MediaClient.
-func (c *Client) VerifyAttached(ctx context.Context, accessToken string, hiveID, mediaID uuid.UUID) error {
-	u := fmt.Sprintf("%s/api/v1/media/%s", c.baseURL, mediaID)
+// Attach implements application/hive.MediaClient by calling
+// media-service's POST /api/v1/media/{id}/attach. media-service performs
+// the actual ownership check and link; this is not a local verification.
+func (c *Client) Attach(ctx context.Context, accessToken string, hiveID, mediaID uuid.UUID) error {
+	u := fmt.Sprintf("%s/api/v1/media/%s/attach", c.baseURL, mediaID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	body, err := json.Marshal(struct {
+		OwnerType string `json:"owner_type"`
+		OwnerID   string `json:"owner_id"`
+	}{OwnerType: "HIVE", OwnerID: hiveID.String()})
+	if err != nil {
+		return fmt.Errorf("mediaclient: marshal attach body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("mediaclient: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -147,28 +159,18 @@ func (c *Client) VerifyAttached(ctx context.Context, accessToken string, hiveID,
 	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
-	case http.StatusNotFound:
-		return apphive.ErrImageNotFound
 	case http.StatusOK:
+		return nil
+	case http.StatusNotFound, http.StatusConflict:
+		// 404: mediaID doesn't exist, or doesn't belong to the caller.
+		// 409: mediaID is already attached to a different owner - a
+		// media item's owner is fixed the first time it's attached.
+		// Both are indistinguishable to the caller, by the same
+		// non-leaking convention hive.ErrNotFound already follows.
+		return apphive.ErrImageNotFound
 	default:
 		return fmt.Errorf("mediaclient: unexpected status %d from media-service", resp.StatusCode)
 	}
-
-	var item mediaItem
-	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
-		return fmt.Errorf("mediaclient: decode response: %w", err)
-	}
-
-	if item.OwnerType != "HIVE" || item.OwnerID != hiveID {
-		// The media exists (and belongs to the caller, since
-		// media-service already scoped this GET to their token) but
-		// isn't attached to this hive. Indistinguishable from "doesn't
-		// exist" to the caller, by the same non-leaking convention
-		// hive.ErrNotFound already follows.
-		return apphive.ErrImageNotFound
-	}
-
-	return nil
 }
 
 // Detach implements application/hive.MediaClient.

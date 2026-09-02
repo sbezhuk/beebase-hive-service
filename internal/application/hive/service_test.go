@@ -179,17 +179,25 @@ func (f *fakeInspectionDeleter) wasDeleted(hiveID uuid.UUID) bool {
 // fakeMediaDeleter is the media-service equivalent of
 // fakeInspectionDeleter. It also stands in for the rest of
 // application/hive.MediaClient: attached tracks which media IDs are
-// attached to which hive, seeded via attach(), so tests can exercise
-// Update's images reconciliation without a real media-service.
+// attached to which hive (seeded via attach(), as if already linked), and
+// unattached tracks the caller's own uploads that exist but aren't linked
+// to anything yet (seeded via uploadUnattached()) - together enough to
+// exercise Update's images reconciliation, including attaching a fresh
+// upload, without a real media-service.
 type fakeMediaDeleter struct {
-	mu       sync.Mutex
-	deleted  []uuid.UUID
-	failFor  map[uuid.UUID]error
-	attached map[uuid.UUID]uuid.UUID // mediaID -> hiveID
+	mu         sync.Mutex
+	deleted    []uuid.UUID
+	failFor    map[uuid.UUID]error
+	attached   map[uuid.UUID]uuid.UUID // mediaID -> hiveID
+	unattached map[uuid.UUID]bool      // mediaID -> exists, belongs to the caller, not yet attached
 }
 
 func newFakeMediaDeleter() *fakeMediaDeleter {
-	return &fakeMediaDeleter{failFor: map[uuid.UUID]error{}, attached: map[uuid.UUID]uuid.UUID{}}
+	return &fakeMediaDeleter{
+		failFor:    map[uuid.UUID]error{},
+		attached:   map[uuid.UUID]uuid.UUID{},
+		unattached: map[uuid.UUID]bool{},
+	}
 }
 
 func (f *fakeMediaDeleter) failOn(hiveID uuid.UUID, err error) {
@@ -197,11 +205,21 @@ func (f *fakeMediaDeleter) failOn(hiveID uuid.UUID, err error) {
 }
 
 // attach registers mediaID as already attached to hiveID, as if it had
-// been uploaded there.
+// been uploaded and linked there.
 func (f *fakeMediaDeleter) attach(hiveID, mediaID uuid.UUID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attached[mediaID] = hiveID
+}
+
+// uploadUnattached registers mediaID as an existing upload belonging to
+// the caller, not yet attached to anything - the fixture Update's images
+// reconciliation needs to prove it can attach a fresh upload, not just
+// keep one already linked.
+func (f *fakeMediaDeleter) uploadUnattached(mediaID uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unattached[mediaID] = true
 }
 
 func (f *fakeMediaDeleter) DeleteByOwner(_ context.Context, _ string, hiveID uuid.UUID) error {
@@ -237,13 +255,21 @@ func (f *fakeMediaDeleter) ListAttached(_ context.Context, _ string, hiveID uuid
 	return ids, nil
 }
 
-func (f *fakeMediaDeleter) VerifyAttached(_ context.Context, _ string, hiveID, mediaID uuid.UUID) error {
+func (f *fakeMediaDeleter) Attach(_ context.Context, _ string, hiveID, mediaID uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if owner, ok := f.attached[mediaID]; ok && owner == hiveID {
-		return nil
+	if owner, ok := f.attached[mediaID]; ok {
+		if owner == hiveID {
+			return nil // idempotent replay
+		}
+		return apphive.ErrImageNotFound // attached to a different owner
 	}
-	return apphive.ErrImageNotFound
+	if !f.unattached[mediaID] {
+		return apphive.ErrImageNotFound // unknown, or not the caller's
+	}
+	delete(f.unattached, mediaID)
+	f.attached[mediaID] = hiveID
+	return nil
 }
 
 func (f *fakeMediaDeleter) Detach(_ context.Context, _ string, mediaID uuid.UUID) error {
@@ -273,7 +299,6 @@ func TestCreate_Success(t *testing.T) {
 	h, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
 		ApiaryID: apiaryID,
 		Name:     "Hive 1",
-		Location: "North corner",
 		Notes:    "strong colony",
 	})
 	if err != nil {
@@ -486,9 +511,8 @@ func TestUpdate_Success(t *testing.T) {
 	}
 
 	updated, _, err := svc.Update(context.Background(), userID, "token", created.ID, apphive.UpdateInput{
-		Name:     "New name",
-		Location: "New location",
-		Notes:    "New notes",
+		Name:  "New name",
+		Notes: "New notes",
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -644,6 +668,44 @@ func TestUpdate_ImagesRejectsForeignMedia(t *testing.T) {
 	}
 	if got.Name != "Hive 1" {
 		t.Errorf("Name = %q after rejected update, want unchanged %q", got.Name, "Hive 1")
+	}
+}
+
+// TestUpdate_ImagesAttachesFreshUpload proves media-service's decoupled
+// upload flow end to end from hive-service's side: an ID for media the
+// caller uploaded but never attached to anything can be named in
+// images and gets linked to this hive, not just IDs already attached
+// here.
+func TestUpdate_ImagesAttachesFreshUpload(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	media := newFakeMediaDeleter()
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	created, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Hive 1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fresh := uuid.New()
+	media.uploadUnattached(fresh)
+
+	desired := []uuid.UUID{fresh}
+	_, images, err := svc.Update(context.Background(), userID, token, created.ID, apphive.UpdateInput{
+		Name:   "Renamed",
+		Images: &desired,
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(images) != 1 || images[0] != fresh {
+		t.Fatalf("images = %v, want [%s]", images, fresh)
+	}
+	if owner, ok := media.attached[fresh]; !ok || owner != created.ID {
+		t.Errorf("fresh upload was not attached to the hive: attached=%v ok=%v", owner, ok)
 	}
 }
 

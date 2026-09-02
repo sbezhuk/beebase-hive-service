@@ -29,7 +29,7 @@ func TestHiveRepository_CreateAndGet(t *testing.T) {
 	userID := uuid.New()
 	apiaryID := uuid.New()
 
-	h := hive.New(userID, apiaryID, "Hive 1", "North corner", "strong colony")
+	h := hive.New(userID, apiaryID, "Hive 1", "strong colony")
 	if err := repo.Create(ctx, h); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestHiveRepository_CreateAndGet(t *testing.T) {
 	if got.ApiaryID != apiaryID {
 		t.Errorf("ApiaryID = %s, want %s", got.ApiaryID, apiaryID)
 	}
-	if got.Name != h.Name || got.Location != h.Location || got.Notes != h.Notes {
+	if got.Name != h.Name || got.Notes != h.Notes {
 		t.Errorf("GetByID = %+v, want fields matching %+v", got, h)
 	}
 }
@@ -82,7 +82,7 @@ func TestHiveRepository_GetByID_WrongOwner_NotFound(t *testing.T) {
 	owner := uuid.New()
 	other := uuid.New()
 
-	h := hive.New(owner, uuid.New(), "Owner's hive", "", "")
+	h := hive.New(owner, uuid.New(), "Owner's hive", "")
 	if err := repo.Create(ctx, h); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -108,11 +108,11 @@ func TestHiveRepository_ListByUser_OnlyOwnHives(t *testing.T) {
 	userB := uuid.New()
 
 	for _, name := range []string{"A1", "A2"} {
-		if err := repo.Create(ctx, hive.New(userA, uuid.New(), name, "", "")); err != nil {
+		if err := repo.Create(ctx, hive.New(userA, uuid.New(), name, "")); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
 	}
-	if err := repo.Create(ctx, hive.New(userB, uuid.New(), "B1", "", "")); err != nil {
+	if err := repo.Create(ctx, hive.New(userB, uuid.New(), "B1", "")); err != nil {
 		t.Fatalf("create B1: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 
 	const count = 5
 	for i := 0; i < count; i++ {
-		if err := repo.Create(ctx, hive.New(userID, uuid.New(), "H", "", "")); err != nil {
+		if err := repo.Create(ctx, hive.New(userID, uuid.New(), "H", "")); err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
 	}
@@ -259,7 +259,7 @@ func TestHiveRepository_ListByUser_StableOrdering(t *testing.T) {
 	now := time.Now().UTC()
 	ids := make([]uuid.UUID, 4)
 	for i := range ids {
-		h := hive.New(userID, uuid.New(), "H", "", "")
+		h := hive.New(userID, uuid.New(), "H", "")
 		h.CreatedAt = now
 		h.UpdatedAt = now
 		if err := repo.Create(ctx, h); err != nil {
@@ -300,13 +300,12 @@ func TestHiveRepository_Update(t *testing.T) {
 	repo := repopostgres.NewHiveRepository(tx)
 	userID := uuid.New()
 
-	h := hive.New(userID, uuid.New(), "Old name", "Old location", "Old notes")
+	h := hive.New(userID, uuid.New(), "Old name", "Old notes")
 	if err := repo.Create(ctx, h); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	h.Name = "New name"
-	h.Location = "New location"
 	h.Notes = "New notes"
 	if err := repo.Update(ctx, h); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -316,7 +315,7 @@ func TestHiveRepository_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetByID after update: %v", err)
 	}
-	if got.Name != "New name" || got.Location != "New location" || got.Notes != "New notes" {
+	if got.Name != "New name" || got.Notes != "New notes" {
 		t.Errorf("GetByID after update = %+v, want updated fields", got)
 	}
 }
@@ -335,7 +334,7 @@ func TestHiveRepository_Update_WrongOwner_NotFound(t *testing.T) {
 	owner := uuid.New()
 	other := uuid.New()
 
-	h := hive.New(owner, uuid.New(), "Owner's hive", "", "")
+	h := hive.New(owner, uuid.New(), "Owner's hive", "")
 	if err := repo.Create(ctx, h); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -369,7 +368,7 @@ func TestHiveRepository_HardDelete_Success(t *testing.T) {
 	repo := repopostgres.NewHiveRepository(tx)
 	userID := uuid.New()
 
-	h := hive.New(userID, uuid.New(), "Gone soon", "", "")
+	h := hive.New(userID, uuid.New(), "Gone soon", "")
 	if err := repo.Create(ctx, h); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -406,7 +405,7 @@ func TestHiveRepository_HardDelete_WrongOwner_NotFoundAndNotDeleted(t *testing.T
 	owner := uuid.New()
 	other := uuid.New()
 
-	h := hive.New(owner, uuid.New(), "Owner's hive", "", "")
+	h := hive.New(owner, uuid.New(), "Owner's hive", "")
 	if err := repo.Create(ctx, h); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -435,7 +434,7 @@ func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
 	apiaryID := uuid.New()
 	otherApiaryID := uuid.New()
 
-	active := hive.New(userID, apiaryID, "Active", "", "")
+	active := hive.New(userID, apiaryID, "Active", "")
 	if err := repo.Create(ctx, active); err != nil {
 		t.Fatalf("create active: %v", err)
 	}
@@ -444,7 +443,7 @@ func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
 	// needs to finish purging leftovers even for hives already
 	// soft-deleted under the old behavior.
 	const softDelete = `UPDATE hives SET deleted_at = now() WHERE id = $1`
-	softDeleted := hive.New(userID, apiaryID, "Already gone", "", "")
+	softDeleted := hive.New(userID, apiaryID, "Already gone", "")
 	if err := repo.Create(ctx, softDeleted); err != nil {
 		t.Fatalf("create soft-deleted: %v", err)
 	}
@@ -452,7 +451,7 @@ func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
 		t.Fatalf("soft-delete: %v", err)
 	}
 	// A hive under a different apiary must not show up.
-	if err := repo.Create(ctx, hive.New(userID, otherApiaryID, "Elsewhere", "", "")); err != nil {
+	if err := repo.Create(ctx, hive.New(userID, otherApiaryID, "Elsewhere", "")); err != nil {
 		t.Fatalf("create elsewhere: %v", err)
 	}
 
@@ -487,7 +486,7 @@ func TestHiveRepository_ListByApiary_ScopedToUser(t *testing.T) {
 	other := uuid.New()
 	apiaryID := uuid.New()
 
-	if err := repo.Create(ctx, hive.New(owner, apiaryID, "Owner's hive", "", "")); err != nil {
+	if err := repo.Create(ctx, hive.New(owner, apiaryID, "Owner's hive", "")); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 

@@ -26,9 +26,9 @@ type Repository interface {
 	// total number of hives userID owns (independent of p, for computing
 	// pagination metadata).
 	ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params) (hives []*Hive, total int, err error)
-	// Update persists h.Name, h.Location, h.Notes, and h.UpdatedAt for the
-	// hive identified by h.ID, scoped to h.UserID. ApiaryID is immutable
-	// and never updated.
+	// Update persists h.Name, h.Notes, and h.UpdatedAt for the hive
+	// identified by h.ID, scoped to h.UserID. ApiaryID is immutable and
+	// never updated.
 	Update(ctx context.Context, h *Hive) error
 	// ListByApiary returns every hive under apiaryID belonging to userID,
 	// including ones a prior soft-delete already marked gone (deliberately

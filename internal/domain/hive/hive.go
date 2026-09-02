@@ -18,7 +18,6 @@ type Hive struct {
 	UserID   uuid.UUID // denormalized owner; see Repository doc comment
 	ApiaryID uuid.UUID // immutable after creation
 	Name     string
-	Location string
 	Notes    string
 
 	CreatedAt time.Time
@@ -29,14 +28,13 @@ type Hive struct {
 // New constructs a Hive owned by userID under apiaryID, with a freshly
 // generated ID and timestamps set to now. Callers must have already
 // verified that apiaryID belongs to userID before calling New.
-func New(userID, apiaryID uuid.UUID, name, location, notes string) *Hive {
+func New(userID, apiaryID uuid.UUID, name, notes string) *Hive {
 	now := time.Now().UTC()
 	return &Hive{
 		ID:        uuid.New(),
 		UserID:    userID,
 		ApiaryID:  apiaryID,
 		Name:      name,
-		Location:  location,
 		Notes:     notes,
 		CreatedAt: now,
 		UpdatedAt: now,

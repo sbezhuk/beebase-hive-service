@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	maxNameLength     = 200
-	maxLocationLength = 500
-	maxNotesLength    = 2000
+	maxNameLength  = 200
+	maxNotesLength = 2000
 )
 
 // Field validation error codes. Each is a stable key a client can map to a
@@ -24,7 +23,6 @@ const (
 	CodeApiaryIDInvalid  = "apiary_id_invalid"
 	CodeNameRequired     = "name_required"
 	CodeNameTooLong      = "name_too_long"
-	CodeLocationTooLong  = "location_too_long"
 	CodeNotesTooLong     = "notes_too_long"
 	CodeImagesInvalid    = "images_invalid"
 )
@@ -58,12 +56,11 @@ func decodeAndValidate(w http.ResponseWriter, r *http.Request, dst validatable) 
 type CreateRequest struct {
 	ApiaryID string `json:"apiary_id"`
 	Name     string `json:"name"`
-	Location string `json:"location"`
 	Notes    string `json:"notes"`
 }
 
 func (r *CreateRequest) Validate() map[string]string {
-	fields := validateFields(r.Name, r.Location, r.Notes)
+	fields := validateFields(r.Name, r.Notes)
 
 	switch {
 	case strings.TrimSpace(r.ApiaryID) == "":
@@ -77,13 +74,12 @@ func (r *CreateRequest) Validate() map[string]string {
 	return fields
 }
 
-// UpdateRequest is the body of PUT /hives/{hiveID}. Update replaces all
-// three editable fields (PUT semantics), not a partial patch. There's no
+// UpdateRequest is the body of PUT /hives/{hiveID}. Update replaces both
+// editable fields (PUT semantics), not a partial patch. There's no
 // apiary_id here: a hive can't be moved to a different apiary.
 type UpdateRequest struct {
-	Name     string `json:"name"`
-	Location string `json:"location"`
-	Notes    string `json:"notes"`
+	Name  string `json:"name"`
+	Notes string `json:"notes"`
 	// Images, when present (even as an empty array), is the desired
 	// final set of already-uploaded media IDs attached to this hive;
 	// omitting the field (or sending JSON null) leaves currently
@@ -94,7 +90,7 @@ type UpdateRequest struct {
 }
 
 func (r *UpdateRequest) Validate() map[string]string {
-	fields := validateFields(r.Name, r.Location, r.Notes)
+	fields := validateFields(r.Name, r.Notes)
 
 	for _, id := range r.Images {
 		if _, err := uuid.Parse(id); err != nil {
@@ -106,7 +102,7 @@ func (r *UpdateRequest) Validate() map[string]string {
 	return fields
 }
 
-func validateFields(name, location, notes string) map[string]string {
+func validateFields(name, notes string) map[string]string {
 	fields := map[string]string{}
 
 	switch {
@@ -116,9 +112,6 @@ func validateFields(name, location, notes string) map[string]string {
 		fields["name"] = CodeNameTooLong
 	}
 
-	if len(location) > maxLocationLength {
-		fields["location"] = CodeLocationTooLong
-	}
 	if len(notes) > maxNotesLength {
 		fields["notes"] = CodeNotesTooLong
 	}

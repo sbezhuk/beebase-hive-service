@@ -17,7 +17,7 @@ func TestCreateRequest_Validate(t *testing.T) {
 	}{
 		{
 			name: "valid",
-			req:  CreateRequest{ApiaryID: validApiaryID, Name: "Hive 1", Location: "North corner", Notes: "n/a"},
+			req:  CreateRequest{ApiaryID: validApiaryID, Name: "Hive 1", Notes: "n/a"},
 			want: map[string]string{},
 		},
 		{
@@ -39,11 +39,6 @@ func TestCreateRequest_Validate(t *testing.T) {
 			name: "name too long",
 			req:  CreateRequest{ApiaryID: validApiaryID, Name: strings.Repeat("a", maxNameLength+1)},
 			want: map[string]string{"name": CodeNameTooLong},
-		},
-		{
-			name: "location too long",
-			req:  CreateRequest{ApiaryID: validApiaryID, Name: "ok", Location: strings.Repeat("a", maxLocationLength+1)},
-			want: map[string]string{"location": CodeLocationTooLong},
 		},
 		{
 			name: "notes too long",

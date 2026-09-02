@@ -124,14 +124,32 @@ func TestClient_ListAttached_UnexpectedStatusFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClient_VerifyAttached_Match(t *testing.T) {
+func TestClient_Attach_Success(t *testing.T) {
 	hiveID := uuid.New()
 	mediaID := uuid.New()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != fmt.Sprintf("/api/v1/media/%s", mediaID) {
-			t.Errorf("path = %q, want /api/v1/media/%s", r.URL.Path, mediaID)
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
 		}
+		if r.URL.Path != fmt.Sprintf("/api/v1/media/%s/attach", mediaID) {
+			t.Errorf("path = %q, want /api/v1/media/%s/attach", r.URL.Path, mediaID)
+		}
+		if r.Header.Get("Authorization") != "Bearer good-token" {
+			t.Errorf("Authorization header = %q, want forwarded bearer token", r.Header.Get("Authorization"))
+		}
+
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body["owner_type"] != "HIVE" {
+			t.Errorf("owner_type = %q, want HIVE", body["owner_type"])
+		}
+		if body["owner_id"] != hiveID.String() {
+			t.Errorf("owner_id = %q, want %s", body["owner_id"], hiveID)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": mediaID, "owner_type": "HIVE", "owner_id": hiveID,
@@ -140,39 +158,34 @@ func TestClient_VerifyAttached_Match(t *testing.T) {
 	defer srv.Close()
 
 	client := mediaclient.New(srv.URL)
-	if err := client.VerifyAttached(context.Background(), "good-token", hiveID, mediaID); err != nil {
-		t.Fatalf("VerifyAttached: %v", err)
+	if err := client.Attach(context.Background(), "good-token", hiveID, mediaID); err != nil {
+		t.Fatalf("Attach: %v", err)
 	}
 }
 
-func TestClient_VerifyAttached_NotFound(t *testing.T) {
+func TestClient_Attach_NotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	client := mediaclient.New(srv.URL)
-	err := client.VerifyAttached(context.Background(), "some-token", uuid.New(), uuid.New())
+	err := client.Attach(context.Background(), "some-token", uuid.New(), uuid.New())
 	if !errors.Is(err, apphive.ErrImageNotFound) {
-		t.Fatalf("VerifyAttached against 404: got %v, want ErrImageNotFound", err)
+		t.Fatalf("Attach against 404: got %v, want ErrImageNotFound", err)
 	}
 }
 
-func TestClient_VerifyAttached_WrongOwnerTreatedAsNotFound(t *testing.T) {
-	mediaID := uuid.New()
-
+func TestClient_Attach_AlreadyAttachedElsewhereTreatedAsNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": mediaID, "owner_type": "HIVE", "owner_id": uuid.New(), // a different hive
-		})
+		w.WriteHeader(http.StatusConflict)
 	}))
 	defer srv.Close()
 
 	client := mediaclient.New(srv.URL)
-	err := client.VerifyAttached(context.Background(), "good-token", uuid.New(), mediaID)
+	err := client.Attach(context.Background(), "good-token", uuid.New(), uuid.New())
 	if !errors.Is(err, apphive.ErrImageNotFound) {
-		t.Fatalf("VerifyAttached against media attached elsewhere: got %v, want ErrImageNotFound", err)
+		t.Fatalf("Attach against media attached elsewhere (409): got %v, want ErrImageNotFound", err)
 	}
 }
 

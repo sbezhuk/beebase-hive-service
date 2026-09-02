@@ -64,7 +64,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	created, err := h.service.Create(r.Context(), userID, token, apphive.CreateInput{
 		ApiaryID: apiaryID,
 		Name:     req.Name,
-		Location: req.Location,
 		Notes:    req.Notes,
 	})
 	if err != nil {
@@ -145,10 +144,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, resultImages, err := h.service.Update(r.Context(), userID, token, hiveID, apphive.UpdateInput{
-		Name:     req.Name,
-		Location: req.Location,
-		Notes:    req.Notes,
-		Images:   images,
+		Name:   req.Name,
+		Notes:  req.Notes,
+		Images: images,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)

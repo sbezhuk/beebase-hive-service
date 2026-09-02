@@ -13,7 +13,6 @@ type Response struct {
 	ID        uuid.UUID   `json:"id"`
 	ApiaryID  uuid.UUID   `json:"apiary_id"`
 	Name      string      `json:"name"`
-	Location  string      `json:"location"`
 	Notes     string      `json:"notes"`
 	Images    []uuid.UUID `json:"images"`
 	CreatedAt time.Time   `json:"created_at"`
@@ -32,7 +31,6 @@ func newResponse(h *hive.Hive, images []uuid.UUID) Response {
 		ID:        h.ID,
 		ApiaryID:  h.ApiaryID,
 		Name:      h.Name,
-		Location:  h.Location,
 		Notes:     h.Notes,
 		Images:    images,
 		CreatedAt: h.CreatedAt,

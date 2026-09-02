@@ -13,6 +13,17 @@ info:
     confirms that by forwarding the caller's own access token to
     apiary-service's GET /api/v1/apiaries/{id} and trusting its answer -
     it never queries apiary ownership itself.
+
+    Photos and other files are uploaded directly to media-service (see its
+    OpenAPI spec) independently of any hive - upload doesn't require one
+    to exist yet, and this service never receives file bytes. `images` on
+    a hive is the set of media IDs media-service currently has attached to
+    it - read-only on every response, and settable only via PUT: an ID
+    already attached here stays; an ID for the caller's own not-yet-
+    attached upload gets linked to this hive on the fly; anything else
+    (unknown, someone else's, or already attached elsewhere - a media
+    item's owner is fixed the first time it's attached and can't be moved)
+    is rejected.
   version: 0.1.0
 servers:
   - url: http://localhost:8080
@@ -99,7 +110,10 @@ paths:
       description: >
         Returns only hives owned by the caller — never another user's — as
         a page of results. Omitting page/limit falls back to page=1,
-        limit=20.
+        limit=20. Each item's `images` is always an empty array: listing
+        deliberately skips the per-hive media-service round trip that
+        populating it for every item on the page would require. Fetch
+        GET /hives/{hiveId} for a specific hive's actual images.
       parameters:
         - name: page
           in: query
@@ -146,7 +160,8 @@ paths:
       description: >
         Returns 404 both when hiveId doesn't exist and when it belongs to
         a different user — the two cases are indistinguishable to the
-        caller, by design.
+        caller, by design. `images` reflects media-service's current
+        state at the time of the call.
       responses:
         "200":
           description: The hive.
@@ -173,9 +188,19 @@ paths:
       tags: [hives]
       summary: Replace a hive's editable fields
       description: >
-        Full replacement (PUT semantics), not a partial patch: name,
-        location, and notes are all set from the request body. A hive
-        can't be moved to a different apiary — there's no apiary_id here.
+        Full replacement (PUT semantics), not a partial patch, for name and
+        notes. A hive can't be moved to a different apiary —
+        there's no apiary_id here. `images` is the one field exempt from
+        full-replacement semantics: omitting it (or sending JSON null)
+        leaves currently attached media untouched, while sending an array
+        (including an empty one) replaces the attached set exactly -
+        attaching whichever of the caller's own not-yet-attached uploads
+        are newly listed (linked to this hive on the fly, via
+        media-service) and detaching whatever isn't listed. An ID that
+        doesn't identify either media already attached here or the
+        caller's own not-yet-attached upload is rejected (a media item's
+        owner is fixed the first time it's attached and can't be moved
+        between hives or apiaries).
       requestBody:
         required: true
         content:
@@ -188,7 +213,10 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/HiveResponse" }
         "400":
-          description: hiveId is not a valid UUID, or the request failed validation.
+          description: >
+            hiveId is not a valid UUID, the request failed validation, or
+            images contains an ID that doesn't identify media already
+            attached to this hive.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
@@ -246,7 +274,6 @@ components:
       properties:
         apiary_id: { type: string, format: uuid, description: Must be an apiary owned by the caller. }
         name: { type: string, maxLength: 200 }
-        location: { type: string, maxLength: 500 }
         notes: { type: string, maxLength: 2000 }
 
     UpdateHiveRequest:
@@ -254,8 +281,17 @@ components:
       required: [name]
       properties:
         name: { type: string, maxLength: 200 }
-        location: { type: string, maxLength: 500 }
         notes: { type: string, maxLength: 2000 }
+        images:
+          type: array
+          items: { type: string, format: uuid }
+          description: >
+            The desired final set of media IDs (returned by media-service's
+            upload endpoint) attached to this hive. Omit this field (or
+            send null) to leave currently attached media untouched; send an
+            array (including an empty one) to replace the attached set
+            exactly. Each ID must already be attached to this hive, or be
+            the caller's own not-yet-attached upload (linked on the fly).
 
     HiveResponse:
       type: object
@@ -263,8 +299,13 @@ components:
         id: { type: string, format: uuid }
         apiary_id: { type: string, format: uuid }
         name: { type: string }
-        location: { type: string }
         notes: { type: string }
+        images:
+          type: array
+          items: { type: string, format: uuid }
+          description: >
+            The IDs of media currently attached to this hive. Always empty
+            on a list item (see GET /hives) and on a freshly created hive.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -316,6 +357,13 @@ components:
               description: >
                 Field name to error code. Each value is a stable key (not a
                 human-readable message) meant to be localized client-side.
+                "images" carries "images_invalid" when an entry isn't a
+                well-formed UUID, or "image_not_found" when an entry is a
+                well-formed UUID that can't be attached to this hive
+                (whether because it doesn't exist, belongs to a different
+                user, or is already attached to a different owner - these
+                are deliberately indistinguishable, the same
+                non-leaking convention hive_not_found already follows).
               additionalProperties:
                 type: string
                 enum:
@@ -323,8 +371,9 @@ components:
                   - apiary_id_invalid
                   - name_required
                   - name_too_long
-                  - location_too_long
                   - notes_too_long
+                  - images_invalid
+                  - image_not_found
                   - invalid_page
                   - invalid_limit
               example: { apiary_id: "apiary_id_invalid" }

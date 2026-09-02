@@ -32,10 +32,13 @@ type MediaClient interface {
 	// ListAttached returns the IDs of every media item currently
 	// attached to hiveID, belonging to whoever presented accessToken.
 	ListAttached(ctx context.Context, accessToken string, hiveID uuid.UUID) ([]uuid.UUID, error)
-	// VerifyAttached confirms mediaID exists, belongs to whoever
-	// presented accessToken, and is already attached to hiveID. Returns
-	// ErrImageNotFound otherwise.
-	VerifyAttached(ctx context.Context, accessToken string, hiveID, mediaID uuid.UUID) error
+	// Attach links mediaID to hiveID in media-service, on behalf of
+	// whoever presented accessToken. It succeeds (as a no-op) if mediaID
+	// is already attached to hiveID, and returns ErrImageNotFound if
+	// mediaID doesn't exist, doesn't belong to the caller, or is already
+	// attached to a different owner - a media item's owner is fixed the
+	// first time it's attached and can't be moved.
+	Attach(ctx context.Context, accessToken string, hiveID, mediaID uuid.UUID) error
 	// Detach removes a single media item, used to drop images an update
 	// no longer wants attached to this hive.
 	Detach(ctx context.Context, accessToken string, mediaID uuid.UUID) error

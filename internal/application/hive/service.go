@@ -41,7 +41,7 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	h := hive.New(userID, in.ApiaryID, in.Name, in.Location, in.Notes)
+	h := hive.New(userID, in.ApiaryID, in.Name, in.Notes)
 	if err := s.hives.Create(ctx, h); err != nil {
 		return nil, fmt.Errorf("hive: create: %w", err)
 	}
@@ -97,7 +97,6 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 	}
 
 	h.Name = in.Name
-	h.Location = in.Location
 	h.Notes = in.Notes
 	h.UpdatedAt = time.Now().UTC()
 
@@ -111,12 +110,14 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 // reconcileImages makes hiveID's attached media in media-service match
 // desired exactly, and returns the resulting set. Every currently
 // attached media ID absent from desired is detached; every ID in desired
-// must already be attached to hiveID - a media item's owner is fixed at
-// upload time in media-service and can't be moved between owners, so this
-// can only ever prune the attached set, never attach media uploaded
-// elsewhere - or Update fails with ErrImageNotFound before any detach
-// happens. desired is deduplicated first so a client submitting the same
-// ID twice can't cause redundant work or an error.
+// not already attached is linked via media-service's Attach - which
+// succeeds only for the caller's own, not-yet-attached media (or media
+// already attached to this same hive), and fails with ErrImageNotFound
+// for anything else (unknown, someone else's, or already attached to a
+// different owner - a media item's owner is fixed the first time it's
+// attached and can't be moved). desired is deduplicated first so a
+// client submitting the same ID twice can't cause redundant work or an
+// error.
 func (s *Service) reconcileImages(ctx context.Context, accessToken string, hiveID uuid.UUID, desired []uuid.UUID) ([]uuid.UUID, error) {
 	current, err := s.media.ListAttached(ctx, accessToken, hiveID)
 	if err != nil {
@@ -141,7 +142,7 @@ func (s *Service) reconcileImages(ctx context.Context, accessToken string, hiveI
 		if currentSet[id] {
 			continue
 		}
-		if err := s.media.VerifyAttached(ctx, accessToken, hiveID, id); err != nil {
+		if err := s.media.Attach(ctx, accessToken, hiveID, id); err != nil {
 			return nil, err
 		}
 	}
