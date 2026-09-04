@@ -304,6 +304,22 @@ components:
             belong to the caller. Dropping an id only removes the
             reference - it does not delete the underlying file.
 
+    HiveImage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        image_url:
+          type: string
+          format: uri
+          description: >
+            The authenticated URL to fetch or display this image's
+            content from (media-service's GET /media/{id}/download,
+            reverse-proxied by the gateway). Built fresh on every
+            response - if the underlying file ever changes, this URL's
+            id stays the same but its content does not, so clients
+            should not cache a fetched image keyed only by this URL
+            without also checking for staleness.
+
     HiveResponse:
       type: object
       properties:
@@ -313,11 +329,11 @@ components:
         notes: { type: string }
         images:
           type: array
-          items: { type: string, format: uuid }
+          items: { $ref: "#/components/schemas/HiveImage" }
           description: >
-            The IDs of media currently attached to this hive, in every
-            response including list items (see GET /hives) - never null,
-            empty when there are no photos.
+            The media currently attached to this hive, in every response
+            including list items (see GET /hives) - never null, empty
+            when there are no photos.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

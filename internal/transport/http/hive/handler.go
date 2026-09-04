@@ -38,13 +38,16 @@ const (
 // Handler exposes the hive HTTP endpoints. Every method requires the
 // request to have already passed through httpmw.RequireAuth.
 type Handler struct {
-	service *apphive.Service
-	log     *slog.Logger
+	service       *apphive.Service
+	log           *slog.Logger
+	publicBaseURL string
 }
 
-// NewHandler returns a Handler backed by service.
-func NewHandler(service *apphive.Service, log *slog.Logger) *Handler {
-	return &Handler{service: service, log: log}
+// NewHandler returns a Handler backed by service. publicBaseURL is the
+// gateway's externally reachable base URL, used to build each image's
+// image_url.
+func NewHandler(service *apphive.Service, log *slog.Logger, publicBaseURL string) *Handler {
+	return &Handler{service: service, log: log, publicBaseURL: publicBaseURL}
 }
 
 // Create handles POST /hives.
@@ -77,7 +80,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusCreated, newResponse(created))
+	httpx.WriteJSON(w, http.StatusCreated, newResponse(created, h.publicBaseURL))
 }
 
 // List handles GET /hives.
@@ -99,7 +102,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives), p, total))
+	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives, h.publicBaseURL), p, total))
 }
 
 // Get handles GET /hives/{hiveID}.
@@ -120,7 +123,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newResponse(got))
+	httpx.WriteJSON(w, http.StatusOK, newResponse(got, h.publicBaseURL))
 }
 
 // Update handles PUT /hives/{hiveID}.
@@ -159,7 +162,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, newResponse(updated))
+	httpx.WriteJSON(w, http.StatusOK, newResponse(updated, h.publicBaseURL))
 }
 
 // Delete handles DELETE /hives/{hiveID}. It cascades: every inspection and

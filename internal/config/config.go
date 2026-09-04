@@ -28,6 +28,12 @@ type Config struct {
 	// ever holding a key that could mint one.
 	AuthJWKSURL string
 
+	// PublicBaseURL is the gateway's externally reachable base URL, used
+	// to build the image_url for each entry in a response's `images`.
+	// Unlike every other *_URL setting in this service, it must resolve
+	// for the client, not just for server-to-server calls.
+	PublicBaseURL string
+
 	// ApiaryServiceURL is apiary-service's base URL. A hive can only be
 	// created under an apiary the caller owns, and apiary-service is the
 	// only source of truth for that: this service asks it, once, at
@@ -60,6 +66,7 @@ func Load() (*Config, error) {
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 
 		AuthJWKSURL:      getEnv("AUTH_JWKS_URL", ""),
+		PublicBaseURL:    getEnv("PUBLIC_BASE_URL", ""),
 		ApiaryServiceURL: getEnv("APIARY_SERVICE_URL", ""),
 
 		InspectionServiceURL: getEnv("INSPECTION_SERVICE_URL", ""),
@@ -71,6 +78,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.AuthJWKSURL == "" {
 		return nil, fmt.Errorf("config: AUTH_JWKS_URL is required")
+	}
+	if cfg.PublicBaseURL == "" {
+		return nil, fmt.Errorf("config: PUBLIC_BASE_URL is required")
 	}
 	if cfg.ApiaryServiceURL == "" {
 		return nil, fmt.Errorf("config: APIARY_SERVICE_URL is required")

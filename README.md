@@ -80,6 +80,7 @@ All configuration is via environment variables (see
 | `DATABASE_URL`              | *(required)*                 | PostgreSQL DSN                            |
 | `DATABASE_CONNECT_TIMEOUT`  | `5s`                         | Timeout for the initial DB connection      |
 | `AUTH_JWKS_URL`             | *(required)*                 | auth-service's public key endpoint, used to verify access tokens |
+| `PUBLIC_BASE_URL`           | *(required)*                 | Gateway's externally reachable base URL, used to build each image's `image_url` |
 | `APIARY_SERVICE_URL`        | *(required)*                 | apiary-service's base URL, used to confirm apiary ownership on create |
 | `TEST_DATABASE_URL`         | *(unset)*                    | Used only by `make test-integration`, never by the app |
 

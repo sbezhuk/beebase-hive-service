@@ -234,7 +234,7 @@ func newTestStack(t *testing.T) *testStack {
 	mediaDeleter := mediaclient.New(mediaServer.URL)
 	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, mediaDeleter)
 	log := logger.New("development", "error")
-	handler := hivehttp.NewHandler(hiveService, log)
+	handler := hivehttp.NewHandler(hiveService, log, "http://localhost:8080")
 
 	router := transporthttp.NewRouter(log, pool, handler, verifier)
 
@@ -715,7 +715,7 @@ func TestHiveFlow_UpdateReplacesImages(t *testing.T) {
 	}
 	var pruned hivehttp.Response
 	decodeJSON(t, resp, &pruned)
-	if len(pruned.Images) != 1 || pruned.Images[0] != keep {
+	if len(pruned.Images) != 1 || pruned.Images[0].ID != keep {
 		t.Fatalf("update with images: images = %v, want [%s]", pruned.Images, keep)
 	}
 	if stack.media.calledWithQueryValue("ids", drop.String()) {
