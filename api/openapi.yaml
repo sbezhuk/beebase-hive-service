@@ -28,7 +28,7 @@ info:
     one. Removing an id from `images` only drops the reference; it does
     not delete the underlying file (deleting the whole hive does delete
     every file it references).
-  version: 0.1.0
+  version: 0.6.0
 servers:
   - url: http://localhost:8080
 
