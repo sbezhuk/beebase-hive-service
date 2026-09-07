@@ -141,11 +141,11 @@ owner until this is addressed.
 ## Development
 
 ```bash
-make run               # go run ./cmd/server
+make run                # go run ./cmd/server
 make fmt                # go fmt ./...
 make vet                # go vet ./...
 make test               # unit tests: go test ./...
-make lint                # golangci-lint run
+make lint               # golangci-lint run
 
 make migrate-up         # apply migrations to DATABASE_URL
 make migrate-down       # roll back the last migration
