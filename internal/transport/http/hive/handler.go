@@ -33,7 +33,10 @@ const (
 	CodeApiaryNotFound  = "apiary_not_found"
 	CodeInvalidApiaryID = "invalid_apiary_id"
 	CodeImageNotFound   = "image_not_found"
+	CodeInvalidSearch   = "invalid_search"
 )
+
+const minSearchLength = 3
 
 // Handler exposes the hive HTTP endpoints. Every method requires the
 // request to have already passed through httpmw.RequireAuth.
@@ -91,14 +94,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p, fields := pagination.ParseParams(r)
+	search, fields := parseSearch(r, fields)
 	if len(fields) > 0 {
 		httpx.WriteValidationError(w, fields)
 		return
-	}
-
-	var search *string
-	if s := r.URL.Query().Get("search"); s != "" {
-		search = &s
 	}
 
 	hives, total, err := h.service.List(r.Context(), userID, p, search)
@@ -108,6 +107,21 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives, h.publicBaseURL), p, total))
+}
+
+func parseSearch(r *http.Request, fields map[string]string) (*string, map[string]string) {
+	s := r.URL.Query().Get("search")
+	if s == "" {
+		return nil, fields
+	}
+	if len(s) < minSearchLength {
+		if fields == nil {
+			fields = map[string]string{}
+		}
+		fields["search"] = CodeInvalidSearch
+		return nil, fields
+	}
+	return &s, fields
 }
 
 // Get handles GET /hives/{hiveID}.

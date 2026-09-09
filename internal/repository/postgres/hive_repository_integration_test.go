@@ -174,7 +174,7 @@ func TestHiveRepository_ListByUser_OnlyOwnHives(t *testing.T) {
 		t.Fatalf("create B1: %v", err)
 	}
 
-	list, total, err := repo.ListByUser(ctx, userA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit})
+	list, total, err := repo.ListByUser(ctx, userA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// First page.
-	first, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 2})
+	first, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 2}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 1: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// Middle page.
-	middle, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 2, Limit: 2})
+	middle, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 2, Limit: 2}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 2: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// Last (partial) page.
-	last, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 3, Limit: 2})
+	last, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 3, Limit: 2}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 3: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// Page beyond available data.
-	beyond, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 10, Limit: 2})
+	beyond, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 10, Limit: 2}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 10: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestHiveRepository_ListByUser_Empty(t *testing.T) {
 
 	repo := repopostgres.NewHiveRepository(tx)
 
-	list, total, err := repo.ListByUser(ctx, uuid.New(), pagination.Params{Page: 1, Limit: pagination.DefaultLimit})
+	list, total, err := repo.ListByUser(ctx, uuid.New(), pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
@@ -326,11 +326,11 @@ func TestHiveRepository_ListByUser_StableOrdering(t *testing.T) {
 		ids[i] = h.ID
 	}
 
-	firstRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4})
+	firstRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser run 1: %v", err)
 	}
-	secondRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4})
+	secondRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4}, nil)
 	if err != nil {
 		t.Fatalf("ListByUser run 2: %v", err)
 	}

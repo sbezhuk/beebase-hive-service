@@ -132,6 +132,11 @@ paths:
           in: query
           description: Rows per page.
           schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: search
+          in: query
+          description: Optional search filter (matched case-insensitively against name and notes). Minimum 3 characters.
+          required: false
+          schema: { type: string, minLength: 3 }
       responses:
         "200":
           description: A page of the caller's hives.
@@ -146,7 +151,7 @@ paths:
                     items: { $ref: "#/components/schemas/HiveResponse" }
                   pagination: { $ref: "#/components/schemas/Pagination" }
         "400":
-          description: page or limit is invalid.
+          description: page, limit, or search is invalid.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
@@ -404,4 +409,5 @@ components:
                   - image_not_found
                   - invalid_page
                   - invalid_limit
+                  - invalid_search
               example: { apiary_id: "apiary_id_invalid" }
