@@ -32,20 +32,24 @@ func NewRouter(
 	r.Get("/health", HealthHandler)
 	r.Get("/ready", ReadyHandler(db))
 
-	r.Route("/api/v1/hives", func(r chi.Router) {
+	r.Group(func(r chi.Router) {
 		r.Use(httpmw.RequireAuth(tokenParser))
 
-		r.Post("/", hiveHandler.Create)
-		r.Get("/", hiveHandler.List)
-		r.Get("/{hiveID}", hiveHandler.Get)
-		r.Put("/{hiveID}", hiveHandler.Update)
-		r.Delete("/{hiveID}", hiveHandler.Delete)
-		// Internal-only: called by apiary-service when it deletes an
-		// apiary, forwarding the caller's own access token. This route
-		// group's RequireAuth can't distinguish that from a genuine
-		// end-user call - beebase-gateway is what actually blocks external
-		// reachability, by never proxying this exact method+path.
-		r.Delete("/", hiveHandler.DeleteByApiary)
+		r.Route("/api/v1/hives", func(r chi.Router) {
+			r.Post("/", hiveHandler.Create)
+			r.Get("/", hiveHandler.List)
+			r.Get("/{hiveID}", hiveHandler.Get)
+			r.Put("/{hiveID}", hiveHandler.Update)
+			r.Delete("/{hiveID}", hiveHandler.Delete)
+			// Internal-only: called by apiary-service when it deletes an
+			// apiary, forwarding the caller's own access token. This route
+			// group's RequireAuth can't distinguish that from a genuine
+			// end-user call - beebase-gateway is what actually blocks external
+			// reachability, by never proxying this exact method+path.
+			r.Delete("/", hiveHandler.DeleteByApiary)
+		})
+
+		r.Get("/api/v1/apiaries/{apiaryID}/hives", hiveHandler.ListByApiary)
 	})
 
 	return r

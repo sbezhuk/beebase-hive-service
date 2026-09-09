@@ -67,35 +67,52 @@ func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) 
 }
 
 func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+	return r.list(ctx, userID, nil, p, search)
+}
+
+func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+	return r.list(ctx, userID, &apiaryID, p, search)
+}
+
+func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
 	countQ := `
 		SELECT count(*)
 		FROM hives
 		WHERE user_id = $1 AND deleted_at IS NULL
 	`
-	countArgs := []any{userID}
-
 	q := `
 		SELECT id, apiary_id, user_id, name, notes, images, created_at, updated_at, deleted_at
 		FROM hives
 		WHERE user_id = $1 AND deleted_at IS NULL
 	`
-	listArgs := []any{userID}
+	countArgs := []any{userID}
+	argIdx := 2
+
+	if apiaryID != nil {
+		cond := fmt.Sprintf(" AND apiary_id = $%d", argIdx)
+		countQ += cond
+		q += cond
+		countArgs = append(countArgs, *apiaryID)
+		argIdx++
+	}
+
+	listArgs := make([]any, len(countArgs))
+	copy(listArgs, countArgs)
 
 	if search != nil && len(*search) >= minSearchLength {
 		pattern := "%" + *search + "%"
-		countQ += ` AND (name ILIKE $2 OR notes ILIKE $2)`
+		cond := fmt.Sprintf(" AND (name ILIKE $%d OR notes ILIKE $%d)", argIdx, argIdx)
+		countQ += cond
+		q += cond
 		countArgs = append(countArgs, pattern)
-		q += fmt.Sprintf(` AND (name ILIKE $2 OR notes ILIKE $2)`)
-		q += fmt.Sprintf(`
-		ORDER BY created_at ASC, id ASC
-		LIMIT $3 OFFSET $4`)
-		listArgs = append(listArgs, pattern, p.Limit, p.Offset())
-	} else {
-		q += `
-		ORDER BY created_at ASC, id ASC
-		LIMIT $2 OFFSET $3`
-		listArgs = append(listArgs, p.Limit, p.Offset())
+		listArgs = append(listArgs, pattern)
+		argIdx++
 	}
+
+	q += fmt.Sprintf(`
+		ORDER BY created_at ASC, id ASC
+		LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+	listArgs = append(listArgs, p.Limit, p.Offset())
 
 	var total int
 	if err := r.db.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
@@ -150,9 +167,9 @@ func images(ids []uuid.UUID) []uuid.UUID {
 	return ids
 }
 
-func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*hive.Hive, error) {
+func (r *HiveRepository) ListAllByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*hive.Hive, error) {
 	const q = `
-		SELECT id, apiary_id, user_id, name, notes, created_at, updated_at, deleted_at
+		SELECT id, apiary_id, user_id, name, notes, images, created_at, updated_at, deleted_at
 		FROM hives
 		WHERE apiary_id = $1 AND user_id = $2
 	`
@@ -166,7 +183,7 @@ func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid
 	hives := []*hive.Hive{}
 	for rows.Next() {
 		var h hive.Hive
-		if err := rows.Scan(&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Notes, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt); err != nil {
+		if err := rows.Scan(&h.ID, &h.ApiaryID, &h.UserID, &h.Name, &h.Notes, &h.Images, &h.CreatedAt, &h.UpdatedAt, &h.DeletedAt); err != nil {
 			return nil, fmt.Errorf("postgres: scan hive: %w", err)
 		}
 		hives = append(hives, &h)

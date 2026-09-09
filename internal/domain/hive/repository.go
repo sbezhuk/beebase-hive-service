@@ -32,13 +32,19 @@ type Repository interface {
 	// identified by h.ID, scoped to h.UserID. ApiaryID is immutable and
 	// never updated.
 	Update(ctx context.Context, h *Hive) error
-	// ListByApiary returns every hive under apiaryID belonging to userID,
+	// ListByApiary returns the page of hives described by p belonging to
+	// userID under apiaryID, along with the total number of active hives
+	// in that apiary. When search is non-nil its value is matched
+	// case-insensitively against name and notes; a nil search means no
+	// filter.
+	ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search *string) (hives []*Hive, total int, err error)
+	// ListAllByApiary returns every hive under apiaryID belonging to userID,
 	// including ones a prior soft-delete already marked gone (deliberately
 	// not filtered by deleted_at). Used only to drive DeleteByApiary's
 	// cascade, which needs to find and purge every remaining artifact
 	// under an apiary being deleted - not a user-facing list endpoint, so
 	// it's unpaginated.
-	ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*Hive, error)
+	ListAllByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*Hive, error)
 	// HardDelete physically removes the hive row. There is no soft-delete
 	// path left on this port: a hive delete is always a full cascade (see
 	// application/hive.Service.Delete), called only after

@@ -109,6 +109,34 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives, h.publicBaseURL), p, total))
 }
 
+// ListByApiary handles GET /api/v1/apiaries/{apiaryID}/hives.
+func (h *Handler) ListByApiary(w http.ResponseWriter, r *http.Request) {
+	userID, token, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	apiaryID, ok := h.pathApiaryID(w, r)
+	if !ok {
+		return
+	}
+
+	p, fields := pagination.ParseParams(r)
+	search, fields := parseSearch(r, fields)
+	if len(fields) > 0 {
+		httpx.WriteValidationError(w, fields)
+		return
+	}
+
+	hives, total, err := h.service.ListByApiary(r.Context(), userID, token, apiaryID, p, search)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives, h.publicBaseURL), p, total))
+}
+
 func parseSearch(r *http.Request, fields map[string]string) (*string, map[string]string) {
 	s := r.URL.Query().Get("search")
 	if s == "" {
@@ -262,6 +290,15 @@ func (h *Handler) pathHiveID(w http.ResponseWriter, r *http.Request) (uuid.UUID,
 	id, err := uuid.Parse(chi.URLParam(r, "hiveID"))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, CodeInvalidHiveID, "hive id must be a valid UUID")
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func (h *Handler) pathApiaryID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	id, err := uuid.Parse(chi.URLParam(r, "apiaryID"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, CodeInvalidApiaryID, "apiary id must be a valid UUID")
 		return uuid.Nil, false
 	}
 	return id, true

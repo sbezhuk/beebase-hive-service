@@ -55,26 +55,30 @@ func (alwaysActiveSessionChecker) IsActive(_ context.Context, _, _ uuid.UUID) (b
 // needing a second full service running.
 type fakeApiaryService struct {
 	mu    sync.Mutex
-	owned map[string]uuid.UUID // "Bearer <token>" -> the one apiary it owns
+	owned map[string]map[uuid.UUID]bool // "Bearer <token>" -> apiaries it owns
 }
 
 func newFakeApiaryService() *fakeApiaryService {
-	return &fakeApiaryService{owned: map[string]uuid.UUID{}}
+	return &fakeApiaryService{owned: map[string]map[uuid.UUID]bool{}}
 }
 
 func (f *fakeApiaryService) allow(token string, apiaryID uuid.UUID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.owned["Bearer "+token] = apiaryID
+	key := "Bearer " + token
+	if f.owned[key] == nil {
+		f.owned[key] = map[uuid.UUID]bool{}
+	}
+	f.owned[key][apiaryID] = true
 }
 
 func (f *fakeApiaryService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	owned, ok := f.owned[r.Header.Get("Authorization")]
+	owned := f.owned[r.Header.Get("Authorization")]
 	f.mu.Unlock()
 
 	apiaryID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/api/v1/apiaries/"))
-	if err != nil || !ok || owned != apiaryID {
+	if err != nil || owned == nil || !owned[apiaryID] {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -555,6 +559,211 @@ func TestHiveFlow_ListInvalidPageAndLimit(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("GET %s: status = %d, want %d", path, resp.StatusCode, http.StatusBadRequest)
 		}
+	}
+}
+
+func TestHiveFlow_ListByApiary_ValidAndExcludedOtherApiaries(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiary1 := uuid.New()
+	apiary2 := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiary1)
+	stack.apiary.allow(token, apiary2)
+
+	// Create 2 hives in apiary1
+	for _, name := range []string{"A1-Hive1", "A1-Hive2"} {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiary1.String(),
+			"name":      name,
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: status = %d, want %d", name, resp.StatusCode, http.StatusCreated)
+		}
+	}
+	// Create 1 hive in apiary2
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiary2.String(),
+		"name":      "A2-Hive1",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create A2-Hive1: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	// 1. Scoped listing returns only apiary1's hives
+	resp = stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiary1.String()+"/hives", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list by apiary1: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var page pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &page)
+	if len(page.Items) != 2 {
+		t.Fatalf("apiary1 hives: got %d items, want 2", len(page.Items))
+	}
+	if page.Pagination.Total != 2 {
+		t.Fatalf("apiary1 total: got %d, want 2", page.Pagination.Total)
+	}
+	for _, h := range page.Items {
+		if h.ApiaryID != apiary1 {
+			t.Errorf("expected hive in apiary %s, got %s", apiary1, h.ApiaryID)
+		}
+	}
+
+	// 2. Global listing GET /api/v1/hives remains unchanged and returns all 3 hives
+	resp = stack.request(t, http.MethodGet, "/api/v1/hives", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("global list: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var globalPage pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &globalPage)
+	if len(globalPage.Items) != 3 || globalPage.Pagination.Total != 3 {
+		t.Fatalf("global list: got %d items (total %d), want 3", len(globalPage.Items), globalPage.Pagination.Total)
+	}
+}
+
+func TestHiveFlow_ListByApiary_Pagination(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	for i := 0; i < 5; i++ {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiaryID.String(),
+			"name":      "H",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %d: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)
+		}
+	}
+
+	// Page 1 with limit 2
+	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryID.String()+"/hives?page=1&limit=2", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("page 1: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var p1 pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &p1)
+	if len(p1.Items) != 2 {
+		t.Fatalf("page 1: got %d items, want 2", len(p1.Items))
+	}
+	if p1.Pagination.Total != 5 || p1.Pagination.TotalPages != 3 || !p1.Pagination.HasNext || p1.Pagination.HasPrevious {
+		t.Fatalf("page 1 pagination: %+v", p1.Pagination)
+	}
+
+	// Page 3 with limit 2
+	resp = stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryID.String()+"/hives?page=3&limit=2", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("page 3: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var p3 pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &p3)
+	if len(p3.Items) != 1 {
+		t.Fatalf("page 3: got %d items, want 1", len(p3.Items))
+	}
+	if p3.Pagination.Total != 5 || p3.Pagination.TotalPages != 3 || p3.Pagination.HasNext || !p3.Pagination.HasPrevious {
+		t.Fatalf("page 3 pagination: %+v", p3.Pagination)
+	}
+}
+
+func TestHiveFlow_ListByApiary_Search(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	items := []map[string]string{
+		{"name": "Queen Carniolan", "notes": "colony notes"},
+		{"name": "Hive 2", "notes": "Queen spotted on frame 4"},
+		{"name": "Worker Hive", "notes": "No queen yet"},
+	}
+	for _, item := range items {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiaryID.String(),
+			"name":      item["name"],
+			"notes":     item["notes"],
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+		}
+	}
+
+	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryID.String()+"/hives?search=queen&page=1&limit=20", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("search: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var searchPage pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &searchPage)
+	if len(searchPage.Items) != 3 || searchPage.Pagination.Total != 3 {
+		t.Fatalf("search queen: got %d items (total %d), want 3", len(searchPage.Items), searchPage.Pagination.Total)
+	}
+
+	resp = stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryID.String()+"/hives?search=carniolan&page=1&limit=20", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("search carniolan: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	decodeJSON(t, resp, &searchPage)
+	if len(searchPage.Items) != 1 || searchPage.Pagination.Total != 1 {
+		t.Fatalf("search carniolan: got %d items (total %d), want 1", len(searchPage.Items), searchPage.Pagination.Total)
+	}
+}
+
+func TestHiveFlow_ListByApiary_InvalidAndNonexistentApiaryID(t *testing.T) {
+	stack := newTestStack(t)
+	token := stack.tokenFor(t, uuid.New())
+
+	// Invalid UUID format -> 400 invalid_apiary_id
+	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/not-a-uuid/hives", token, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("GET not-a-uuid: status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	var errResp map[string]any
+	decodeJSON(t, resp, &errResp)
+	errObj, _ := errResp["error"].(map[string]any)
+	if errObj["code"] != hivehttp.CodeInvalidApiaryID {
+		t.Errorf("expected error code %s, got %v", hivehttp.CodeInvalidApiaryID, errObj["code"])
+	}
+
+	// Nonexistent apiary -> 404 apiary_not_found
+	randomApiary := uuid.New()
+	resp = stack.request(t, http.MethodGet, "/api/v1/apiaries/"+randomApiary.String()+"/hives", token, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET nonexistent apiary: status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	decodeJSON(t, resp, &errResp)
+	errObj, _ = errResp["error"].(map[string]any)
+	if errObj["code"] != hivehttp.CodeApiaryNotFound {
+		t.Errorf("expected error code %s, got %v", hivehttp.CodeApiaryNotFound, errObj["code"])
+	}
+}
+
+func TestHiveFlow_ListByApiary_UnauthorizedAndCrossUser(t *testing.T) {
+	stack := newTestStack(t)
+	userA := uuid.New()
+	userB := uuid.New()
+	apiaryA := uuid.New()
+	tokenA := stack.tokenFor(t, userA)
+	tokenB := stack.tokenFor(t, userB)
+	stack.apiary.allow(tokenA, apiaryA)
+
+	// Unauthenticated request -> 401
+	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryA.String()+"/hives", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated request: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	// Cross-user access (userB trying to list userA's apiary) -> 404 apiary_not_found
+	resp = stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryA.String()+"/hives", tokenB, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("cross-user request: status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	var errResp map[string]any
+	decodeJSON(t, resp, &errResp)
+	errObj, _ := errResp["error"].(map[string]any)
+	if errObj["code"] != hivehttp.CodeApiaryNotFound {
+		t.Errorf("expected error code %s, got %v", hivehttp.CodeApiaryNotFound, errObj["code"])
 	}
 }
 

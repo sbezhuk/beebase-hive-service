@@ -262,6 +262,69 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /api/v1/apiaries/{apiaryID}/hives:
+    parameters:
+      - name: apiaryID
+        in: path
+        required: true
+        description: Apiary ID.
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [hives]
+      summary: List the authenticated user's hives for one apiary
+      description: >
+        Returns only hives owned by the caller belonging to this apiary, as a
+        page of results. Rejected with 404 apiary_not_found if apiaryID doesn't
+        exist or doesn't belong to the caller — verified live against
+        apiary-service. Omitting page/limit falls back to page=1, limit=20.
+        Each item's images reflects that hive's actual attached media ids.
+      parameters:
+        - name: page
+          in: query
+          description: 1-indexed page number.
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          description: Rows per page.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: search
+          in: query
+          description: Optional search filter (matched case-insensitively against name and notes). Minimum 3 characters.
+          required: false
+          schema: { type: string, minLength: 3 }
+      responses:
+        "200":
+          description: A page of the caller's hives for this apiary.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/HiveResponse" }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
+        "400":
+          description: apiaryID is not a valid UUID, or page, limit, or search is invalid.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/ValidationErrorResponse" }
+                  - { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: apiaryID doesn't exist, or belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
 components:
   securitySchemes:
     bearerAuth:

@@ -78,6 +78,17 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Param
 	return s.hives.ListByUser(ctx, userID, p, search)
 }
 
+// ListByApiary returns the page of hives described by p belonging to
+// userID under apiaryID, after confirming with apiary-service that userID
+// actually owns that apiary. When search is non-nil its value is matched
+// case-insensitively against the hive's name and notes fields.
+func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+	if err := s.apiaries.Verify(ctx, accessToken, apiaryID); err != nil {
+		return nil, 0, err
+	}
+	return s.hives.ListByApiary(ctx, userID, apiaryID, p, search)
+}
+
 // Update replaces the editable fields of the hive identified by hiveID,
 // if it belongs to userID, and returns the resulting hive. accessToken is
 // the caller's own access token, forwarded to media-service so it can run
@@ -156,7 +167,7 @@ func (s *Service) Delete(ctx context.Context, userID uuid.UUID, accessToken stri
 // fully deleted earlier in the loop deleted - the same no-rollback
 // contract as Delete, just applied across a batch.
 func (s *Service) DeleteByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID) error {
-	hives, err := s.hives.ListByApiary(ctx, userID, apiaryID)
+	hives, err := s.hives.ListAllByApiary(ctx, userID, apiaryID)
 	if err != nil {
 		return fmt.Errorf("hive: list by apiary: %w", err)
 	}

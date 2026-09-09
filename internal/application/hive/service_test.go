@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -44,12 +45,18 @@ func (f *fakeRepo) GetByID(_ context.Context, userID, hiveID uuid.UUID) (*hive.H
 	return &cp, nil
 }
 
-func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID, p pagination.Params, _ *string) ([]*hive.Hive, int, error) {
+func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var all []*hive.Hive
 	for _, h := range f.byID {
 		if h.UserID == userID && h.DeletedAt == nil {
+			if search != nil && len(*search) >= 3 {
+				s := strings.ToLower(*search)
+				if !strings.Contains(strings.ToLower(h.Name), s) && !strings.Contains(strings.ToLower(h.Notes), s) {
+					continue
+				}
+			}
 			cp := *h
 			all = append(all, &cp)
 		}
@@ -86,7 +93,43 @@ func (f *fakeRepo) Update(_ context.Context, h *hive.Hive) error {
 	return nil
 }
 
-func (f *fakeRepo) ListByApiary(_ context.Context, userID, apiaryID uuid.UUID) ([]*hive.Hive, error) {
+func (f *fakeRepo) ListByApiary(_ context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var all []*hive.Hive
+	for _, h := range f.byID {
+		if h.UserID == userID && h.ApiaryID == apiaryID && h.DeletedAt == nil {
+			if search != nil && len(*search) >= 3 {
+				s := strings.ToLower(*search)
+				if !strings.Contains(strings.ToLower(h.Name), s) && !strings.Contains(strings.ToLower(h.Notes), s) {
+					continue
+				}
+			}
+			cp := *h
+			all = append(all, &cp)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.Before(all[j].CreatedAt)
+		}
+		return all[i].ID.String() < all[j].ID.String()
+	})
+
+	total := len(all)
+	start := p.Offset()
+	if start > total {
+		start = total
+	}
+	end := start + p.Limit
+	if end > total {
+		end = total
+	}
+
+	return all[start:end], total, nil
+}
+
+func (f *fakeRepo) ListAllByApiary(_ context.Context, userID, apiaryID uuid.UUID) ([]*hive.Hive, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var all []*hive.Hive
@@ -117,19 +160,22 @@ func (f *fakeRepo) HardDelete(_ context.Context, userID, hiveID uuid.UUID) error
 // pairs are "owned", everything else is rejected exactly like a 404 from
 // the real service would be.
 type fakeApiaryVerifier struct {
-	owned map[string]uuid.UUID // token -> the one apiary it owns
+	owned map[string]map[uuid.UUID]bool
 }
 
 func newFakeApiaryVerifier() *fakeApiaryVerifier {
-	return &fakeApiaryVerifier{owned: map[string]uuid.UUID{}}
+	return &fakeApiaryVerifier{owned: map[string]map[uuid.UUID]bool{}}
 }
 
 func (f *fakeApiaryVerifier) allow(token string, apiaryID uuid.UUID) {
-	f.owned[token] = apiaryID
+	if f.owned[token] == nil {
+		f.owned[token] = map[uuid.UUID]bool{}
+	}
+	f.owned[token][apiaryID] = true
 }
 
 func (f *fakeApiaryVerifier) Verify(_ context.Context, accessToken string, apiaryID uuid.UUID) error {
-	if owned, ok := f.owned[accessToken]; ok && owned == apiaryID {
+	if apiaries, ok := f.owned[accessToken]; ok && apiaries[apiaryID] {
 		return nil
 	}
 	return apphive.ErrApiaryNotFound
@@ -536,6 +582,175 @@ func TestList_Empty(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("List = %v, want empty", list)
+	}
+}
+
+func TestListByApiary_ReturnsOnlyOwnHivesForThatApiary(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := newService(newFakeRepo(), verifier)
+	userA := uuid.New()
+	userB := uuid.New()
+	apiaryA1 := uuid.New()
+	apiaryA2 := uuid.New()
+	apiaryB := uuid.New()
+	tokenA := "token-a"
+	tokenB := "token-b"
+	verifier.allow(tokenA, apiaryA1)
+	verifier.allow(tokenA, apiaryA2)
+	verifier.allow(tokenB, apiaryB)
+
+	for _, name := range []string{"A1-Hive1", "A1-Hive2"} {
+		if _, err := svc.Create(context.Background(), userA, tokenA, apphive.CreateInput{ApiaryID: apiaryA1, Name: name}); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	if _, err := svc.Create(context.Background(), userA, tokenA, apphive.CreateInput{ApiaryID: apiaryA2, Name: "A2-Hive1"}); err != nil {
+		t.Fatalf("create A2-Hive1: %v", err)
+	}
+	if _, err := svc.Create(context.Background(), userB, tokenB, apphive.CreateInput{ApiaryID: apiaryB, Name: "B-Hive1"}); err != nil {
+		t.Fatalf("create B-Hive1: %v", err)
+	}
+
+	list, total, err := svc.ListByApiary(context.Background(), userA, tokenA, apiaryA1, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("ListByApiary total = %d, want 2", total)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListByApiary returned %d hives, want 2", len(list))
+	}
+	for _, h := range list {
+		if h.UserID != userA || h.ApiaryID != apiaryA1 {
+			t.Errorf("ListByApiary leaked hive %s (user %s, apiary %s)", h.ID, h.UserID, h.ApiaryID)
+		}
+	}
+}
+
+func TestListByApiary_Pagination(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := newService(newFakeRepo(), verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	for i := 0; i < 5; i++ {
+		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	firstPage, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 2}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary page 1: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(firstPage) != 2 {
+		t.Fatalf("page 1 returned %d hives, want 2", len(firstPage))
+	}
+
+	lastPage, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 3, Limit: 2}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary page 3: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(lastPage) != 1 {
+		t.Fatalf("page 3 returned %d hives, want 1", len(lastPage))
+	}
+
+	beyond, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 10, Limit: 2}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary page 10: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(beyond) != 0 {
+		t.Fatalf("page beyond available data returned %d hives, want 0", len(beyond))
+	}
+}
+
+func TestListByApiary_Search(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := newService(newFakeRepo(), verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	inputs := []apphive.CreateInput{
+		{ApiaryID: apiaryID, Name: "Queen Carnica", Notes: "Strong colony"},
+		{ApiaryID: apiaryID, Name: "Italian Hive", Notes: "Golden queen inside"},
+		{ApiaryID: apiaryID, Name: "Buckfast", Notes: "Swarm control done"},
+	}
+	for _, in := range inputs {
+		if _, err := svc.Create(context.Background(), userID, token, in); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	search := "queen"
+	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 10}, &search)
+	if err != nil {
+		t.Fatalf("ListByApiary search: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	if len(list) != 2 {
+		t.Fatalf("list len = %d, want 2", len(list))
+	}
+
+	searchWorker := "swarm"
+	list, total, err = svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 10}, &searchWorker)
+	if err != nil {
+		t.Fatalf("ListByApiary search: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list len = %d, want 1", len(list))
+	}
+}
+
+func TestListByApiary_Empty(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := newService(newFakeRepo(), verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("total = %d, want 0", total)
+	}
+	if len(list) != 0 {
+		t.Fatalf("ListByApiary = %v, want empty", list)
+	}
+}
+
+func TestListByApiary_UnownedApiaryReturnsErrApiaryNotFound(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := newService(newFakeRepo(), verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	// Do not allow token for apiaryID
+
+	_, _, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
+	if !errors.Is(err, apphive.ErrApiaryNotFound) {
+		t.Fatalf("ListByApiary on unowned apiary: got %v, want ErrApiaryNotFound", err)
 	}
 }
 
@@ -1064,15 +1279,15 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 		t.Fatalf("create b: %v", err)
 	}
 
-	// fakeRepo.ListByApiary sorts by ID, so determine that order directly
+	// fakeRepo.ListAllByApiary sorts by ID, so determine that order directly
 	// rather than relying on random UUID ordering, and fail the
 	// second-visited hive so the assertions below are deterministic.
-	visited, err := repo.ListByApiary(context.Background(), userID, apiaryID)
+	visited, err := repo.ListAllByApiary(context.Background(), userID, apiaryID)
 	if err != nil {
-		t.Fatalf("ListByApiary: %v", err)
+		t.Fatalf("ListAllByApiary: %v", err)
 	}
 	if len(visited) != 2 {
-		t.Fatalf("ListByApiary returned %d hives, want 2", len(visited))
+		t.Fatalf("ListAllByApiary returned %d hives, want 2", len(visited))
 	}
 	firstVisited, secondVisited := visited[0].ID, visited[1].ID
 	boom := errors.New("inspection-service unreachable")

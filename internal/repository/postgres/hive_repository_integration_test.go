@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -477,7 +478,7 @@ func TestHiveRepository_HardDelete_WrongOwner_NotFoundAndNotDeleted(t *testing.T
 	}
 }
 
-func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
+func TestHiveRepository_ListAllByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
@@ -496,7 +497,7 @@ func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
 	if err := repo.Create(ctx, active); err != nil {
 		t.Fatalf("create active: %v", err)
 	}
-	// Soft-deleted before this feature shipped hard deletes: ListByApiary
+	// Soft-deleted before this feature shipped hard deletes: ListAllByApiary
 	// must still find it, since it drives DeleteByApiary's cascade, which
 	// needs to finish purging leftovers even for hives already
 	// soft-deleted under the old behavior.
@@ -513,23 +514,23 @@ func TestHiveRepository_ListByApiary_IncludesAlreadySoftDeleted(t *testing.T) {
 		t.Fatalf("create elsewhere: %v", err)
 	}
 
-	got, err := repo.ListByApiary(ctx, userID, apiaryID)
+	got, err := repo.ListAllByApiary(ctx, userID, apiaryID)
 	if err != nil {
-		t.Fatalf("ListByApiary: %v", err)
+		t.Fatalf("ListAllByApiary: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("ListByApiary returned %d hives, want 2", len(got))
+		t.Fatalf("ListAllByApiary returned %d hives, want 2", len(got))
 	}
 	ids := map[uuid.UUID]bool{}
 	for _, h := range got {
 		ids[h.ID] = true
 	}
 	if !ids[active.ID] || !ids[softDeleted.ID] {
-		t.Errorf("ListByApiary = %v, want to include both %s and %s", ids, active.ID, softDeleted.ID)
+		t.Errorf("ListAllByApiary = %v, want to include both %s and %s", ids, active.ID, softDeleted.ID)
 	}
 }
 
-func TestHiveRepository_ListByApiary_ScopedToUser(t *testing.T) {
+func TestHiveRepository_ListAllByApiary_ScopedToUser(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
@@ -548,11 +549,111 @@ func TestHiveRepository_ListByApiary_ScopedToUser(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	got, err := repo.ListByApiary(ctx, other, apiaryID)
+	got, err := repo.ListAllByApiary(ctx, other, apiaryID)
 	if err != nil {
-		t.Fatalf("ListByApiary by non-owner: %v", err)
+		t.Fatalf("ListAllByApiary by non-owner: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("ListByApiary by non-owner = %v, want empty", got)
+		t.Fatalf("ListAllByApiary by non-owner = %v, want empty", got)
+	}
+}
+
+func TestHiveRepository_ListByApiary_OnlyOwnHivesForThatApiaryExcludingDeleted(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	userA := uuid.New()
+	userB := uuid.New()
+	apiaryA1 := uuid.New()
+	apiaryA2 := uuid.New()
+
+	for _, name := range []string{"A1-1", "A1-2"} {
+		if err := repo.Create(ctx, hive.New(userA, apiaryA1, name, "")); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	// Other apiary for userA
+	if err := repo.Create(ctx, hive.New(userA, apiaryA2, "A2-1", "")); err != nil {
+		t.Fatalf("create A2-1: %v", err)
+	}
+	// UserB hive in apiaryA1
+	if err := repo.Create(ctx, hive.New(userB, apiaryA1, "B1-1", "")); err != nil {
+		t.Fatalf("create B1-1: %v", err)
+	}
+	// Soft deleted hive in apiaryA1 for userA
+	softDeleted := hive.New(userA, apiaryA1, "Deleted", "")
+	if err := repo.Create(ctx, softDeleted); err != nil {
+		t.Fatalf("create soft deleted: %v", err)
+	}
+	const softDelete = `UPDATE hives SET deleted_at = now() WHERE id = $1`
+	if _, err := tx.Exec(ctx, softDelete, softDeleted.ID); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+
+	list, total, err := repo.ListByApiary(ctx, userA, apiaryA1, pagination.Params{Page: 1, Limit: 10}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("ListByApiary total = %d, want 2", total)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListByApiary len = %d, want 2", len(list))
+	}
+	for _, h := range list {
+		if h.UserID != userA || h.ApiaryID != apiaryA1 {
+			t.Errorf("ListByApiary leaked hive %s", h.ID)
+		}
+	}
+}
+
+func TestHiveRepository_ListByApiary_PaginationAndSearch(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+
+	for i := 0; i < 5; i++ {
+		h := hive.New(userID, apiaryID, fmt.Sprintf("Hive %d", i), "Colony notes")
+		if i < 3 {
+			h.Notes = "Queen marked yellow"
+		}
+		if err := repo.Create(ctx, h); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+
+	// Pagination: page 1 limit 2
+	p1, total, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: 2}, nil)
+	if err != nil {
+		t.Fatalf("ListByApiary p1: %v", err)
+	}
+	if total != 5 || len(p1) != 2 {
+		t.Fatalf("p1: total = %d (want 5), len = %d (want 2)", total, len(p1))
+	}
+
+	// Search: "queen"
+	search := "queen"
+	res, total, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: 10}, &search)
+	if err != nil {
+		t.Fatalf("ListByApiary search: %v", err)
+	}
+	if total != 3 || len(res) != 3 {
+		t.Fatalf("search: total = %d (want 3), len = %d (want 3)", total, len(res))
 	}
 }
