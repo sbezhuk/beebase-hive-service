@@ -24,8 +24,10 @@ type Repository interface {
 	GetByID(ctx context.Context, userID, hiveID uuid.UUID) (*Hive, error)
 	// ListByUser returns the page of hives described by p, along with the
 	// total number of hives userID owns (independent of p, for computing
-	// pagination metadata).
-	ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params) (hives []*Hive, total int, err error)
+	// pagination metadata). When search is non-nil its value is matched
+	// case-insensitively against name and notes; a nil search means no
+	// filter.
+	ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search *string) (hives []*Hive, total int, err error)
 	// Update persists h.Name, h.Notes, and h.UpdatedAt for the hive
 	// identified by h.ID, scoped to h.UserID. ApiaryID is immutable and
 	// never updated.

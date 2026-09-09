@@ -96,7 +96,12 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hives, total, err := h.service.List(r.Context(), userID, p)
+	var search *string
+	if s := r.URL.Query().Get("search"); s != "" {
+		search = &s
+	}
+
+	hives, total, err := h.service.List(r.Context(), userID, p, search)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return

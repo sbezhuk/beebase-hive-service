@@ -72,9 +72,10 @@ func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive
 }
 
 // List returns the page of hives described by p, out of every hive
-// belonging to userID.
-func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params) ([]*hive.Hive, int, error) {
-	return s.hives.ListByUser(ctx, userID, p)
+// belonging to userID. When search is non-nil its value is matched
+// case-insensitively against the hive's name and notes fields.
+func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+	return s.hives.ListByUser(ctx, userID, p, search)
 }
 
 // Update replaces the editable fields of the hive identified by hiveID,

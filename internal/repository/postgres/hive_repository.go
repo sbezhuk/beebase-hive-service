@@ -12,6 +12,11 @@ import (
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 )
 
+// minSearchLength is the minimum number of characters required for the
+// search term to be applied. Shorter terms produce noisy results and put
+// unnecessary load on the database.
+const minSearchLength = 3
+
 // HiveRepository implements domain/hive.Repository against PostgreSQL.
 // Every method scopes its query by user_id, so a user can never read or
 // write a hive they don't own: there's no separate ownership-check step
@@ -61,27 +66,43 @@ func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) 
 	return &h, nil
 }
 
-func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params) ([]*hive.Hive, int, error) {
-	const countQ = `
+func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+	countQ := `
 		SELECT count(*)
 		FROM hives
 		WHERE user_id = $1 AND deleted_at IS NULL
 	`
+	countArgs := []any{userID}
 
-	var total int
-	if err := r.db.QueryRow(ctx, countQ, userID).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("postgres: count hives: %w", err)
-	}
-
-	const q = `
+	q := `
 		SELECT id, apiary_id, user_id, name, notes, images, created_at, updated_at, deleted_at
 		FROM hives
 		WHERE user_id = $1 AND deleted_at IS NULL
-		ORDER BY created_at ASC, id ASC
-		LIMIT $2 OFFSET $3
 	`
+	listArgs := []any{userID}
 
-	rows, err := r.db.Query(ctx, q, userID, p.Limit, p.Offset())
+	if search != nil && len(*search) >= minSearchLength {
+		pattern := "%" + *search + "%"
+		countQ += ` AND (name ILIKE $2 OR notes ILIKE $2)`
+		countArgs = append(countArgs, pattern)
+		q += fmt.Sprintf(` AND (name ILIKE $2 OR notes ILIKE $2)`)
+		q += fmt.Sprintf(`
+		ORDER BY created_at ASC, id ASC
+		LIMIT $3 OFFSET $4`)
+		listArgs = append(listArgs, pattern, p.Limit, p.Offset())
+	} else {
+		q += `
+		ORDER BY created_at ASC, id ASC
+		LIMIT $2 OFFSET $3`
+		listArgs = append(listArgs, p.Limit, p.Offset())
+	}
+
+	var total int
+	if err := r.db.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("postgres: count hives: %w", err)
+	}
+
+	rows, err := r.db.Query(ctx, q, listArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("postgres: list hives: %w", err)
 	}
