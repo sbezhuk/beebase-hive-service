@@ -6,6 +6,7 @@ package hive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,15 +21,16 @@ import (
 // transport layer) and passes it straight through to the repository,
 // which enforces ownership at the query level.
 type Service struct {
-	hives       hive.Repository
-	apiaries    ApiaryVerifier
-	inspections InspectionDeleter
-	media       MediaClient
+	hives         hive.Repository
+	apiaries      ApiaryVerifier
+	inspections   InspectionDeleter
+	media         MediaClient
+	subscriptions EntitlementResolver
 }
 
 // NewService constructs a Service.
-func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, media MediaClient) *Service {
-	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, media: media}
+func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, media MediaClient, subscriptions EntitlementResolver) *Service {
+	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, media: media, subscriptions: subscriptions}
 }
 
 // Create creates a new hive owned by userID under in.ApiaryID, after
@@ -47,6 +49,23 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
+	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("hive: resolve entitlement: %w", err)
+	}
+
+	maxHives := 0 // 0 means unlimited
+	if entitlement == EntitlementFree {
+		count, err := s.hives.CountByUser(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("hive: count hives: %w", err)
+		}
+		if count >= FreeMaxHives {
+			return nil, ErrHiveLimitReached
+		}
+		maxHives = FreeMaxHives
+	}
+
 	dedup := dedupeImages(in.Images)
 	if len(dedup) > 0 {
 		if err := s.media.VerifyOwnership(ctx, accessToken, dedup); err != nil {
@@ -57,7 +76,10 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 	h := hive.New(userID, in.ApiaryID, in.Name, in.Notes)
 	h.Images = dedup
 
-	if err := s.hives.Create(ctx, h); err != nil {
+	if err := s.hives.CreateWithLimit(ctx, h, maxHives); err != nil {
+		if errors.Is(err, hive.ErrLimitReached) {
+			return nil, ErrHiveLimitReached
+		}
 		return nil, fmt.Errorf("hive: create: %w", err)
 	}
 

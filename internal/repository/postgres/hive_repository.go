@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sbezhuk/beebase-common/pagination"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
@@ -42,6 +43,81 @@ func (r *HiveRepository) Create(ctx context.Context, h *hive.Hive) error {
 	}
 
 	return nil
+}
+
+// CountByUser returns the total number of non-deleted hives owned by userID across all apiaries.
+func (r *HiveRepository) CountByUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	const q = `
+		SELECT count(*)
+		FROM hives
+		WHERE user_id = $1 AND deleted_at IS NULL
+	`
+	var count int
+	if err := r.db.QueryRow(ctx, q, userID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("postgres: count hives: %w", err)
+	}
+	return count, nil
+}
+
+// CreateWithLimit creates a new hive, but only if the user currently owns
+// fewer than maxCount active hives across all apiaries. If maxCount <= 0, creation is unlimited.
+// Uses a transaction-scoped advisory lock on the user ID to prevent race conditions.
+func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount int) error {
+	if maxCount <= 0 {
+		return r.Create(ctx, h)
+	}
+
+	pool, isPool := r.db.(*pgxpool.Pool)
+	if isPool {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("postgres: begin tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		const lockQ = `SELECT pg_advisory_xact_lock(hashtext('hive_limit:' || $1::text))`
+		if _, err := tx.Exec(ctx, lockQ, h.UserID); err != nil {
+			return fmt.Errorf("postgres: acquire advisory lock: %w", err)
+		}
+
+		const countQ = `SELECT count(*) FROM hives WHERE user_id = $1 AND deleted_at IS NULL`
+		var count int
+		if err := tx.QueryRow(ctx, countQ, h.UserID).Scan(&count); err != nil {
+			return fmt.Errorf("postgres: count hives: %w", err)
+		}
+		if count >= maxCount {
+			return hive.ErrLimitReached
+		}
+
+		const insertQ = `
+			INSERT INTO hives (id, apiary_id, user_id, name, notes, images, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`
+		if _, err := tx.Exec(ctx, insertQ, h.ID, h.ApiaryID, h.UserID, h.Name, h.Notes, images(h.Images), h.CreatedAt, h.UpdatedAt); err != nil {
+			return fmt.Errorf("postgres: create hive: %w", err)
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("postgres: commit tx: %w", err)
+		}
+		return nil
+	}
+
+	const lockQ = `SELECT pg_advisory_xact_lock(hashtext('hive_limit:' || $1::text))`
+	if _, err := r.db.Exec(ctx, lockQ, h.UserID); err != nil {
+		return fmt.Errorf("postgres: acquire advisory lock: %w", err)
+	}
+
+	const countQ = `SELECT count(*) FROM hives WHERE user_id = $1 AND deleted_at IS NULL`
+	var count int
+	if err := r.db.QueryRow(ctx, countQ, h.UserID).Scan(&count); err != nil {
+		return fmt.Errorf("postgres: count hives: %w", err)
+	}
+	if count >= maxCount {
+		return hive.ErrLimitReached
+	}
+
+	return r.Create(ctx, h)
 }
 
 func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive, error) {

@@ -21,6 +21,12 @@ import (
 // cross-service call on every read.
 type Repository interface {
 	Create(ctx context.Context, h *Hive) error
+	// CreateWithLimit creates a new hive, but only if the user owns fewer
+	// than maxCount active hives across all apiaries. If maxCount <= 0, creation is unlimited.
+	// Returns ErrLimitReached if the limit is exceeded.
+	CreateWithLimit(ctx context.Context, h *Hive, maxCount int) error
+	// CountByUser returns the total number of non-deleted hives owned by userID across all apiaries.
+	CountByUser(ctx context.Context, userID uuid.UUID) (int, error)
 	GetByID(ctx context.Context, userID, hiveID uuid.UUID) (*Hive, error)
 	// ListByUser returns the page of hives described by p, along with the
 	// total number of hives userID owns (independent of p, for computing

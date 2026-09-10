@@ -42,3 +42,18 @@ type MediaClient interface {
 	// hive itself is being cascade-deleted.
 	DeleteByIDs(ctx context.Context, accessToken string, ids []uuid.UUID) error
 }
+
+// Entitlement values returned by subscription-service.
+const (
+	EntitlementFree = "free"
+	EntitlementPro  = "pro"
+
+	// FreeMaxHives is the maximum number of hives a free-tier user can own across all apiaries.
+	FreeMaxHives = 5
+)
+
+// EntitlementResolver resolves the subscription entitlement for a user by
+// forwarding their access token to subscription-service.
+type EntitlementResolver interface {
+	GetEntitlement(ctx context.Context, accessToken string) (string, error)
+}

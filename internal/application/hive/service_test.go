@@ -3,6 +3,7 @@ package hive_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -29,6 +30,37 @@ func newFakeRepo() *fakeRepo {
 func (f *fakeRepo) Create(_ context.Context, h *hive.Hive) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	cp := *h
+	f.byID[h.ID] = &cp
+	return nil
+}
+
+func (f *fakeRepo) CountByUser(_ context.Context, userID uuid.UUID) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, h := range f.byID {
+		if h.UserID == userID && h.DeletedAt == nil {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeRepo) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if maxCount > 0 {
+		count := 0
+		for _, existing := range f.byID {
+			if existing.UserID == h.UserID && existing.DeletedAt == nil {
+				count++
+			}
+		}
+		if count >= maxCount {
+			return hive.ErrLimitReached
+		}
+	}
 	cp := *h
 	f.byID[h.ID] = &cp
 	return nil
@@ -293,12 +325,28 @@ func (f *fakeMediaClient) deleteCallCount() int {
 	return len(f.deletedIDs)
 }
 
+type fakeSubscriptionClient struct {
+	entitlement string
+	err         error
+}
+
+func newFakeSubscriptionClient() *fakeSubscriptionClient {
+	return &fakeSubscriptionClient{entitlement: apphive.EntitlementPro}
+}
+
+func (f *fakeSubscriptionClient) GetEntitlement(_ context.Context, _ string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.entitlement, nil
+}
+
 // newService builds a Service backed by repo and apiaries, with
-// always-succeeding fake inspection/media clients - the right default
-// for every test that isn't specifically exercising the delete cascade
-// or images.
+// always-succeeding fake inspection/media/subscription clients - the right default
+// for every test that isn't specifically exercising the delete cascade,
+// images, or entitlement limits.
 func newService(repo *fakeRepo, apiaries *fakeApiaryVerifier) *apphive.Service {
-	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeMediaClient())
+	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeMediaClient(), newFakeSubscriptionClient())
 }
 
 // --- tests ---
@@ -368,7 +416,7 @@ func TestCreate_WithImages_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -406,7 +454,7 @@ func TestCreate_WithImages_RejectsForeignMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient() // foreign is deliberately never own()'d
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -817,7 +865,7 @@ func TestUpdate_ImagesNil_LeavesImagesUntouched(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -853,7 +901,7 @@ func TestUpdate_ImagesEmpty_ClearsReferencesWithoutDeletingFiles(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -894,7 +942,7 @@ func TestUpdate_ImagesReplacedWholesale(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -935,7 +983,7 @@ func TestUpdate_ImagesRejectsForeignMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient() // foreign is deliberately never own()'d
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -981,7 +1029,7 @@ func TestUpdate_ImagesAcceptsNewlyOwnedMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1060,7 +1108,7 @@ func TestDelete_CascadesInspectionsAndImagesBeforeHive(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media)
+	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1102,7 +1150,7 @@ func TestDelete_SkipsMediaCallWhenNoImages(t *testing.T) {
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
 	media.failDeleteWith(errors.New("should never be called"))
-	svc := apphive.NewService(repo, verifier, inspections, media)
+	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1130,7 +1178,7 @@ func TestDelete_AbortsOnInspectionDeleteFailure_HiveSurvives(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media)
+	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1170,7 +1218,7 @@ func TestDelete_AbortsOnMediaDeleteFailure_HiveSurvives(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media)
+	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1206,7 +1254,7 @@ func TestDeleteByApiary_CascadesEveryHive(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media)
+	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	otherApiaryID := uuid.New()
@@ -1266,7 +1314,7 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media)
+	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1309,4 +1357,165 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 func errorsIsNotFound(svc *apphive.Service, userID, hiveID uuid.UUID) bool {
 	_, err := svc.Get(context.Background(), userID, hiveID)
 	return errors.Is(err, hive.ErrNotFound)
+}
+
+func TestCreate_FreeTier_FiveHivesSucceed(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	for i := 1; i <= 5; i++ {
+		h, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+			ApiaryID: apiaryID,
+			Name:     fmt.Sprintf("Hive %d", i),
+		})
+		if err != nil {
+			t.Fatalf("creation of hive %d failed for free tier: %v", i, err)
+		}
+		if h == nil {
+			t.Fatalf("expected non-nil hive %d", i)
+		}
+	}
+
+	count, err := repo.CountByUser(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("count failed: %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("expected 5 hives, got %d", count)
+	}
+}
+
+func TestCreate_FreeTier_SixthHiveRejected(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	for i := 1; i <= 5; i++ {
+		_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+			ApiaryID: apiaryID,
+			Name:     fmt.Sprintf("Hive %d", i),
+		})
+		if err != nil {
+			t.Fatalf("creation of hive %d failed: %v", i, err)
+		}
+	}
+
+	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Sixth Hive",
+	})
+	if !errors.Is(err, apphive.ErrHiveLimitReached) {
+		t.Fatalf("expected ErrHiveLimitReached for sixth hive on free tier, got: %v", err)
+	}
+}
+
+func TestCreate_FreeTier_HivesCountedAcrossMultipleApiaries(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiary1 := uuid.New()
+	apiary2 := uuid.New()
+	token := "token"
+	verifier.allow(token, apiary1)
+	verifier.allow(token, apiary2)
+
+	// Create 3 hives in apiary1
+	for i := 1; i <= 3; i++ {
+		_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+			ApiaryID: apiary1,
+			Name:     fmt.Sprintf("Apiary1-Hive %d", i),
+		})
+		if err != nil {
+			t.Fatalf("create failed in apiary1: %v", err)
+		}
+	}
+
+	// Create 2 hives in apiary2 (total = 5)
+	for i := 1; i <= 2; i++ {
+		_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+			ApiaryID: apiary2,
+			Name:     fmt.Sprintf("Apiary2-Hive %d", i),
+		})
+		if err != nil {
+			t.Fatalf("create failed in apiary2: %v", err)
+		}
+	}
+
+	// 6th hive in apiary2 must be rejected because user already has 5 hives total
+	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiary2,
+		Name:     "Apiary2-Hive 3",
+	})
+	if !errors.Is(err, apphive.ErrHiveLimitReached) {
+		t.Fatalf("expected ErrHiveLimitReached across apiaries on free tier, got: %v", err)
+	}
+}
+
+func TestCreate_ProTier_UnlimitedHivesSucceed(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementPro}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	for i := 1; i <= 10; i++ {
+		_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+			ApiaryID: apiaryID,
+			Name:     fmt.Sprintf("Pro Hive %d", i),
+		})
+		if err != nil {
+			t.Fatalf("creation of pro hive %d failed: %v", i, err)
+		}
+	}
+
+	count, err := repo.CountByUser(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("count failed: %v", err)
+	}
+	if count != 10 {
+		t.Fatalf("expected 10 hives for pro user, got %d", count)
+	}
+}
+
+func TestCreate_SubscriptionLookupFailure_FailsClosed(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{err: errors.New("subscription-service down")}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Attempted Hive",
+	})
+	if err == nil {
+		t.Fatal("expected creation to fail when subscription-service fails")
+	}
+	if errors.Is(err, apphive.ErrHiveLimitReached) {
+		t.Fatal("should not falsely report ErrHiveLimitReached when subscription-service fails")
+	}
+
+	count, _ := repo.CountByUser(context.Background(), userID)
+	if count != 0 {
+		t.Fatalf("no hive should have been created on lookup failure, got count %d", count)
+	}
 }

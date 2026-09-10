@@ -53,6 +53,10 @@ type Config struct {
 	// under the hive before hard-deleting it.
 	InspectionServiceURL string
 	MediaServiceURL      string
+
+	// SubscriptionServiceURL is subscription-service's base URL, used to
+	// query the caller's entitlement level (free vs pro) on hive creation.
+	SubscriptionServiceURL string
 }
 
 // Load builds a Config from environment variables, falling back to
@@ -79,8 +83,9 @@ func Load() (*Config, error) {
 		PublicBaseURL:    getEnv("PUBLIC_BASE_URL", ""),
 		ApiaryServiceURL: getEnv("APIARY_SERVICE_URL", ""),
 
-		InspectionServiceURL: getEnv("INSPECTION_SERVICE_URL", ""),
-		MediaServiceURL:      getEnv("MEDIA_SERVICE_URL", ""),
+		InspectionServiceURL:   getEnv("INSPECTION_SERVICE_URL", ""),
+		MediaServiceURL:        getEnv("MEDIA_SERVICE_URL", ""),
+		SubscriptionServiceURL: getEnv("SUBSCRIPTION_SERVICE_URL", ""),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -103,6 +108,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.MediaServiceURL == "" {
 		return nil, fmt.Errorf("config: MEDIA_SERVICE_URL is required")
+	}
+	if cfg.SubscriptionServiceURL == "" {
+		return nil, fmt.Errorf("config: SUBSCRIPTION_SERVICE_URL is required")
 	}
 
 	return cfg, nil

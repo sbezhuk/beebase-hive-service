@@ -23,6 +23,7 @@ import (
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/inspectionclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/mediaclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/subscriptionclient"
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 	transporthttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
@@ -182,11 +183,42 @@ func (f *fakeCascadeTarget) calledWithQueryValue(key, value string) bool {
 	return false
 }
 
+type fakeSubscriptionTarget struct {
+	mu          sync.Mutex
+	entitlement string
+	errStatus   int
+}
+
+func newFakeSubscriptionTarget() *fakeSubscriptionTarget {
+	return &fakeSubscriptionTarget{entitlement: "pro"}
+}
+
+func (f *fakeSubscriptionTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.errStatus != 0 {
+		w.WriteHeader(f.errStatus)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"entitlement": f.entitlement})
+}
+
+func (f *fakeSubscriptionTarget) setEntitlement(ent string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entitlement = ent
+}
+
 type testStack struct {
 	server      *httptest.Server
 	apiary      *fakeApiaryService
 	inspections *fakeCascadeTarget
 	media       *fakeCascadeTarget
+	subs        *fakeSubscriptionTarget
+	subServer   *httptest.Server
 	priv        ed25519.PrivateKey
 }
 
@@ -244,11 +276,16 @@ func newTestStack(t *testing.T) *testStack {
 	mediaServer := httptest.NewServer(media)
 	t.Cleanup(mediaServer.Close)
 
+	subs := newFakeSubscriptionTarget()
+	subServer := httptest.NewServer(subs)
+	t.Cleanup(subServer.Close)
+
 	hiveRepo := repopostgres.NewHiveRepository(tx)
 	apiaryVerifier := apiaryclient.New(apiaryServer.URL)
 	inspectionDeleter := inspectionclient.New(inspectionServer.URL)
 	mediaDeleter := mediaclient.New(mediaServer.URL)
-	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, mediaDeleter)
+	subClient := subscriptionclient.New(subServer.URL)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, mediaDeleter, subClient)
 	log := logger.New("development", "error")
 	handler := hivehttp.NewHandler(hiveService, log, "http://localhost:8080")
 
@@ -257,7 +294,15 @@ func newTestStack(t *testing.T) *testStack {
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
-	return &testStack{server: srv, apiary: apiary, inspections: inspections, media: media, priv: priv}
+	return &testStack{
+		server:      srv,
+		apiary:      apiary,
+		inspections: inspections,
+		media:       media,
+		subs:        subs,
+		subServer:   subServer,
+		priv:        priv,
+	}
 }
 
 func (s *testStack) tokenFor(t *testing.T, userID uuid.UUID) string {
@@ -983,5 +1028,77 @@ func TestHiveFlow_CreateWithImages_RejectsForeignMedia(t *testing.T) {
 	decodeJSON(t, resp, &list)
 	if len(list.Items) != 0 {
 		t.Fatalf("a hive was persisted despite a rejected image: %v", list.Items)
+	}
+}
+
+func TestHiveFlow_FreeTierLimit(t *testing.T) {
+	stack := newTestStack(t)
+	stack.subs.setEntitlement("free")
+
+	userID := uuid.New()
+	apiaryID1 := uuid.New()
+	apiaryID2 := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID1)
+	stack.apiary.allow(token, apiaryID2)
+
+	// Create 3 hives in apiary 1
+	for i := 1; i <= 3; i++ {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
+			"apiary_id": apiaryID1.String(),
+			"name":      "Hive A",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create hive %d in apiary 1: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)
+		}
+	}
+
+	// Create 2 hives in apiary 2 (total = 5)
+	for i := 1; i <= 2; i++ {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
+			"apiary_id": apiaryID2.String(),
+			"name":      "Hive B",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create hive %d in apiary 2: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)
+		}
+	}
+
+	// 6th hive (across any apiary) fails with 403 Forbidden and hive_limit_reached
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
+		"apiary_id": apiaryID1.String(),
+		"name":      "Hive 6",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("6th hive create: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	if errBody.Error.Code != "hive_limit_reached" {
+		t.Fatalf("error code = %q, want %q", errBody.Error.Code, "hive_limit_reached")
+	}
+}
+
+func TestHiveFlow_SubscriptionServiceUnreachable(t *testing.T) {
+	stack := newTestStack(t)
+	stack.subServer.Close() // simulate subscription-service down
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
+		"apiary_id": apiaryID.String(),
+		"name":      "Should fail closed",
+	})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("create with subscription down: status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
 	}
 }

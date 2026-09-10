@@ -28,12 +28,13 @@ import (
 // string, since it's the same meaning from the client's point of view
 // regardless of which service returned it.
 const (
-	CodeHiveNotFound    = "hive_not_found"
-	CodeInvalidHiveID   = "invalid_hive_id"
-	CodeApiaryNotFound  = "apiary_not_found"
-	CodeInvalidApiaryID = "invalid_apiary_id"
-	CodeImageNotFound   = "image_not_found"
-	CodeInvalidSearch   = "invalid_search"
+	CodeHiveNotFound     = "hive_not_found"
+	CodeInvalidHiveID    = "invalid_hive_id"
+	CodeApiaryNotFound   = "apiary_not_found"
+	CodeInvalidApiaryID  = "invalid_apiary_id"
+	CodeImageNotFound    = "image_not_found"
+	CodeInvalidSearch    = "invalid_search"
+	CodeHiveLimitReached = "hive_limit_reached"
 )
 
 const minSearchLength = 3
@@ -312,6 +313,8 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusNotFound, CodeApiaryNotFound, "apiary not found")
 	case errors.Is(err, apphive.ErrImageNotFound):
 		httpx.WriteValidationError(w, map[string]string{"images": CodeImageNotFound})
+	case errors.Is(err, apphive.ErrHiveLimitReached):
+		httpx.WriteError(w, http.StatusForbidden, CodeHiveLimitReached, "free tier allows a maximum of 5 hives")
 	default:
 		httpx.WriteInternalError(w, h.log, err)
 	}

@@ -16,3 +16,7 @@ var ErrApiaryNotFound = errors.New("apiary not found")
 // distinguishing why, by the same non-leaking convention hive.ErrNotFound
 // already follows.
 var ErrImageNotFound = errors.New("image not found")
+
+// ErrHiveLimitReached is returned when a free-tier user attempts to create
+// more hives than permitted by the free plan across all their apiaries.
+var ErrHiveLimitReached = errors.New("hive limit reached")
