@@ -35,7 +35,7 @@ const (
 	CodeImageNotFound    = "image_not_found"
 	CodeInvalidSearch    = "invalid_search"
 	CodeHiveLimitReached = "hive_limit_reached"
-	CodeHiveNameTaken    = "hive_name_taken"
+	CodeHiveNameExists   = "hive_name_exists"
 )
 
 const minSearchLength = 3
@@ -317,7 +317,7 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, apphive.ErrHiveLimitReached):
 		httpx.WriteError(w, http.StatusForbidden, CodeHiveLimitReached, "free tier allows a maximum of 5 hives")
 	case errors.Is(err, hive.ErrNameTaken):
-		httpx.WriteError(w, http.StatusConflict, CodeHiveNameTaken, "hive name already exists in this apiary")
+		httpx.WriteError(w, http.StatusConflict, CodeHiveNameExists, "hive name already exists in this apiary")
 	default:
 		httpx.WriteInternalError(w, h.log, err)
 	}

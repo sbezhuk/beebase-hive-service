@@ -552,8 +552,8 @@ func TestHiveFlow_NameUniqueness(t *testing.T) {
 		} `json:"error"`
 	}
 	decodeJSON(t, resp, &errBody)
-	if errBody.Error.Code != hivehttp.CodeHiveNameTaken {
-		t.Fatalf("duplicate code = %q, want %q", errBody.Error.Code, hivehttp.CodeHiveNameTaken)
+	if errBody.Error.Code != hivehttp.CodeHiveNameExists {
+		t.Fatalf("duplicate code = %q, want %q", errBody.Error.Code, hivehttp.CodeHiveNameExists)
 	}
 
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
