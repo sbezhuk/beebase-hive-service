@@ -30,6 +30,9 @@ func newFakeRepo() *fakeRepo {
 func (f *fakeRepo) Create(_ context.Context, h *hive.Hive) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.hasActiveNameLocked(h.ApiaryID, h.Name, h.ID) {
+		return hive.ErrNameTaken
+	}
 	cp := *h
 	f.byID[h.ID] = &cp
 	return nil
@@ -50,6 +53,9 @@ func (f *fakeRepo) CountByUser(_ context.Context, userID uuid.UUID) (int, error)
 func (f *fakeRepo) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.hasActiveNameLocked(h.ApiaryID, h.Name, h.ID) {
+		return hive.ErrNameTaken
+	}
 	if maxCount > 0 {
 		count := 0
 		for _, existing := range f.byID {
@@ -120,9 +126,21 @@ func (f *fakeRepo) Update(_ context.Context, h *hive.Hive) error {
 	if !ok || existing.UserID != h.UserID || existing.DeletedAt != nil {
 		return hive.ErrNotFound
 	}
+	if f.hasActiveNameLocked(h.ApiaryID, h.Name, h.ID) {
+		return hive.ErrNameTaken
+	}
 	cp := *h
 	f.byID[h.ID] = &cp
 	return nil
+}
+
+func (f *fakeRepo) hasActiveNameLocked(apiaryID uuid.UUID, name string, excludeID uuid.UUID) bool {
+	for id, existing := range f.byID {
+		if id != excludeID && existing.ApiaryID == apiaryID && existing.DeletedAt == nil && existing.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeRepo) ListByApiary(_ context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
@@ -349,6 +367,13 @@ func newService(repo *fakeRepo, apiaries *fakeApiaryVerifier) *apphive.Service {
 	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeMediaClient(), newFakeSubscriptionClient())
 }
 
+func mustCreate(t *testing.T, repo *fakeRepo, h *hive.Hive) {
+	t.Helper()
+	if err := repo.Create(context.Background(), h); err != nil {
+		t.Fatalf("seed hive: %v", err)
+	}
+}
+
 // --- tests ---
 
 func TestCreate_Success(t *testing.T) {
@@ -375,6 +400,48 @@ func TestCreate_Success(t *testing.T) {
 	}
 	if len(h.Images) != 0 {
 		t.Errorf("Images = %v, want empty", h.Images)
+	}
+}
+
+func TestCreate_DuplicateNameWithinSameApiary_ReturnsNameTaken(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	svc := newService(repo, verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	verifier.allow("token", apiaryID)
+
+	_, err := svc.Create(context.Background(), userID, "token", apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+
+	_, err = svc.Create(context.Background(), userID, "token", apphive.CreateInput{
+		ApiaryID: apiaryID,
+		Name:     "Hive 1",
+	})
+	if !errors.Is(err, hive.ErrNameTaken) {
+		t.Fatalf("second Create: got %v, want ErrNameTaken", err)
+	}
+}
+
+func TestCreate_SameNameInDifferentApiariesSucceeds(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	svc := newService(newFakeRepo(), verifier)
+	userID := uuid.New()
+	apiary1 := uuid.New()
+	apiary2 := uuid.New()
+	verifier.allow("token", apiary1)
+	verifier.allow("token", apiary2)
+
+	if _, err := svc.Create(context.Background(), userID, "token", apphive.CreateInput{ApiaryID: apiary1, Name: "Hive 1"}); err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if _, err := svc.Create(context.Background(), userID, "token", apphive.CreateInput{ApiaryID: apiary2, Name: "Hive 1"}); err != nil {
+		t.Fatalf("same name in another apiary should succeed: %v", err)
 	}
 }
 
@@ -579,7 +646,7 @@ func TestList_Pagination(t *testing.T) {
 	verifier.allow(token, apiaryID)
 
 	for i := 0; i < 5; i++ {
-		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H"}); err != nil {
+		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: fmt.Sprintf("H-%d", i)}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 	}
@@ -685,7 +752,7 @@ func TestListByApiary_Pagination(t *testing.T) {
 	verifier.allow(token, apiaryID)
 
 	for i := 0; i < 5; i++ {
-		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H"}); err != nil {
+		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: fmt.Sprintf("H-%d", i)}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 	}
@@ -827,6 +894,44 @@ func TestUpdate_Success(t *testing.T) {
 	}
 	if updated.ApiaryID != apiaryID {
 		t.Errorf("ApiaryID changed to %s, want unchanged %s", updated.ApiaryID, apiaryID)
+	}
+}
+
+func TestUpdate_UnchangedNameRemainsValid(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	svc := newService(repo, verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "Hive 1", "old notes")
+	mustCreate(t, repo, h)
+
+	updated, err := svc.Update(context.Background(), userID, "token", h.ID, apphive.UpdateInput{
+		Name:  "Hive 1",
+		Notes: "new notes",
+	})
+	if err != nil {
+		t.Fatalf("Update with unchanged name: %v", err)
+	}
+	if updated.Name != "Hive 1" || updated.Notes != "new notes" {
+		t.Fatalf("updated = %+v, want unchanged name with new notes", updated)
+	}
+}
+
+func TestUpdate_DuplicateNameWithinSameApiary_ReturnsNameTaken(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	svc := newService(repo, verifier)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	first := hive.New(userID, apiaryID, "First", "")
+	second := hive.New(userID, apiaryID, "Second", "")
+	mustCreate(t, repo, first)
+	mustCreate(t, repo, second)
+
+	_, err := svc.Update(context.Background(), userID, "token", second.ID, apphive.UpdateInput{Name: "First"})
+	if !errors.Is(err, hive.ErrNameTaken) {
+		t.Fatalf("Update duplicate name: got %v, want ErrNameTaken", err)
 	}
 }
 

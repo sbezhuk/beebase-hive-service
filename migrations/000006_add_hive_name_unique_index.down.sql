@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_hives_apiary_id_name_unique_active;

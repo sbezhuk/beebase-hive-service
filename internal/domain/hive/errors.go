@@ -11,3 +11,7 @@ var ErrNotFound = errors.New("hive not found")
 // ErrLimitReached is returned by Repository.CreateWithLimit when the user's
 // active hive count across all apiaries already meets or exceeds the specified limit.
 var ErrLimitReached = errors.New("hive limit reached")
+
+// ErrNameTaken is returned when an active hive with the same name already
+// exists under the same apiary.
+var ErrNameTaken = errors.New("hive name taken")

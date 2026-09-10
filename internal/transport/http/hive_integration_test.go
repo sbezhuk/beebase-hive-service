@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -519,6 +520,59 @@ func TestHiveFlow_CannotAccessAnotherUsersHive(t *testing.T) {
 	}
 }
 
+func TestHiveFlow_NameUniqueness(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiary1 := uuid.New()
+	apiary2 := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiary1)
+	stack.apiary.allow(token, apiary2)
+
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiary1.String(),
+		"name":      "Hive 1",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create first: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var first hivehttp.Response
+	decodeJSON(t, resp, &first)
+
+	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiary1.String(),
+		"name":      "Hive 1",
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("create duplicate in same apiary: status = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	if errBody.Error.Code != hivehttp.CodeHiveNameTaken {
+		t.Fatalf("duplicate code = %q, want %q", errBody.Error.Code, hivehttp.CodeHiveNameTaken)
+	}
+
+	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiary2.String(),
+		"name":      "Hive 1",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("same name in another apiary: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	resp = stack.request(t, http.MethodPut, "/api/v1/hives/"+first.ID.String(), token, map[string]string{
+		"name":  "Hive 1",
+		"notes": "unchanged-name update",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update unchanged name: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
 func TestHiveFlow_WithoutTokenIsUnauthorized(t *testing.T) {
 	stack := newTestStack(t)
 
@@ -564,7 +618,7 @@ func TestHiveFlow_ListPagination(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
 			"apiary_id": apiaryID.String(),
-			"name":      "H",
+			"name":      fmt.Sprintf("H-%d", i),
 		})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("create %d: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)
@@ -676,7 +730,7 @@ func TestHiveFlow_ListByApiary_Pagination(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
 			"apiary_id": apiaryID.String(),
-			"name":      "H",
+			"name":      fmt.Sprintf("H-%d", i),
 		})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("create %d: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)

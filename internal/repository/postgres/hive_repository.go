@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sbezhuk/beebase-common/pagination"
@@ -17,6 +18,10 @@ import (
 // search term to be applied. Shorter terms produce noisy results and put
 // unnecessary load on the database.
 const minSearchLength = 3
+
+// uniqueViolationCode is PostgreSQL's SQLSTATE for a unique constraint
+// violation.
+const uniqueViolationCode = "23505"
 
 // HiveRepository implements domain/hive.Repository against PostgreSQL.
 // Every method scopes its query by user_id, so a user can never read or
@@ -39,6 +44,9 @@ func (r *HiveRepository) Create(ctx context.Context, h *hive.Hive) error {
 
 	_, err := r.db.Exec(ctx, q, h.ID, h.ApiaryID, h.UserID, h.Name, h.Notes, images(h.Images), h.CreatedAt, h.UpdatedAt)
 	if err != nil {
+		if isUniqueNameViolation(err) {
+			return hive.ErrNameTaken
+		}
 		return fmt.Errorf("postgres: create hive: %w", err)
 	}
 
@@ -94,6 +102,9 @@ func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxC
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		`
 		if _, err := tx.Exec(ctx, insertQ, h.ID, h.ApiaryID, h.UserID, h.Name, h.Notes, images(h.Images), h.CreatedAt, h.UpdatedAt); err != nil {
+			if isUniqueNameViolation(err) {
+				return hive.ErrNameTaken
+			}
 			return fmt.Errorf("postgres: create hive: %w", err)
 		}
 
@@ -225,6 +236,9 @@ func (r *HiveRepository) Update(ctx context.Context, h *hive.Hive) error {
 
 	tag, err := r.db.Exec(ctx, q, h.Name, h.Notes, images(h.Images), h.UpdatedAt, h.ID, h.UserID)
 	if err != nil {
+		if isUniqueNameViolation(err) {
+			return hive.ErrNameTaken
+		}
 		return fmt.Errorf("postgres: update hive: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
@@ -232,6 +246,13 @@ func (r *HiveRepository) Update(ctx context.Context, h *hive.Hive) error {
 	}
 
 	return nil
+}
+
+func isUniqueNameViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == uniqueViolationCode &&
+		pgErr.ConstraintName == "idx_hives_apiary_id_name_unique_active"
 }
 
 // images coalesces a nil slice to an empty one - the images column is
