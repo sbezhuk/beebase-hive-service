@@ -67,6 +67,9 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 	}
 
 	dedup := dedupeImages(in.Images)
+	if len(dedup) > MaxMediaAttachments {
+		return nil, ErrMediaLimitReached
+	}
 	if len(dedup) > 0 {
 		if err := s.media.VerifyOwnership(ctx, accessToken, dedup); err != nil {
 			return nil, err
@@ -131,6 +134,9 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 
 	if in.Images != nil {
 		dedup := dedupeImages(*in.Images)
+		if len(dedup) > MaxMediaAttachments {
+			return nil, ErrMediaLimitReached
+		}
 		if len(dedup) > 0 {
 			if err := s.media.VerifyOwnership(ctx, accessToken, dedup); err != nil {
 				return nil, err

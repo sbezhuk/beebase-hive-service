@@ -50,6 +50,9 @@ const (
 
 	// FreeMaxHives is the maximum number of hives a free-tier user can own across all apiaries.
 	FreeMaxHives = 5
+
+	// MaxMediaAttachments is the maximum number of media attachments allowed per hive.
+	MaxMediaAttachments = 5
 )
 
 // EntitlementResolver resolves the subscription entitlement for a user by

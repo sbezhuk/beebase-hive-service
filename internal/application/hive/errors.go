@@ -20,3 +20,8 @@ var ErrImageNotFound = errors.New("image not found")
 // ErrHiveLimitReached is returned when a free-tier user attempts to create
 // more hives than permitted by the free plan across all their apiaries.
 var ErrHiveLimitReached = errors.New("hive limit reached")
+
+// ErrMediaLimitReached is returned when an attempt is made to attach more
+// photos than permitted by the media attachment limit.
+var ErrMediaLimitReached = errors.New("media limit reached")
+

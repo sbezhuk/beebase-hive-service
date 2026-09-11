@@ -40,6 +40,12 @@ func TestWriteServiceError(t *testing.T) {
 			wantCode:   CodeHiveLimitReached,
 		},
 		{
+			name:       "media limit reached",
+			err:        apphive.ErrMediaLimitReached,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   CodeMediaLimitReached,
+		},
+		{
 			name:       "hive name exists",
 			err:        hive.ErrNameTaken,
 			wantStatus: http.StatusConflict,
