@@ -184,3 +184,62 @@ func TestParseSearch(t *testing.T) {
 		})
 	}
 }
+
+func TestParseSortOrder(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	cases := []struct {
+		name          string
+		query         string
+		wantSortOrder *string
+		wantCode      string
+	}{
+		{
+			name:          "omitted",
+			query:         "",
+			wantSortOrder: nil,
+		},
+		{
+			name:          "asc",
+			query:         "sortOrder=asc",
+			wantSortOrder: strPtr("asc"),
+		},
+		{
+			name:          "desc",
+			query:         "sortOrder=desc",
+			wantSortOrder: strPtr("desc"),
+		},
+		{
+			name:     "invalid",
+			query:    "sortOrder=newest",
+			wantCode: CodeInvalidSortOrder,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/?"+tc.query, nil)
+			s, fields := parseSortOrder(req, nil)
+			if tc.wantCode != "" {
+				if fields["sortOrder"] != tc.wantCode {
+					t.Fatalf("fields[sortOrder] = %q, want %q", fields["sortOrder"], tc.wantCode)
+				}
+				if s != nil {
+					t.Fatalf("sortOrder = %v, want nil", s)
+				}
+				return
+			}
+			if len(fields) != 0 {
+				t.Fatalf("unexpected fields: %v", fields)
+			}
+			if tc.wantSortOrder == nil && s != nil {
+				t.Fatalf("sortOrder = %v, want nil", s)
+			}
+			if tc.wantSortOrder != nil {
+				if s == nil || *s != *tc.wantSortOrder {
+					t.Fatalf("sortOrder = %v, want %v", s, *tc.wantSortOrder)
+				}
+			}
+		})
+	}
+}

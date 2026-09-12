@@ -175,7 +175,7 @@ func TestHiveRepository_ListByUser_OnlyOwnHives(t *testing.T) {
 		t.Fatalf("create B1: %v", err)
 	}
 
-	list, total, err := repo.ListByUser(ctx, userA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
+	list, total, err := repo.ListByUser(ctx, userA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// First page.
-	first, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 2}, nil)
+	first, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 1: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// Middle page.
-	middle, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 2, Limit: 2}, nil)
+	middle, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 2, Limit: 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 2: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// Last (partial) page.
-	last, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 3, Limit: 2}, nil)
+	last, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 3, Limit: 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 3: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestHiveRepository_ListByUser_Pagination(t *testing.T) {
 	}
 
 	// Page beyond available data.
-	beyond, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 10, Limit: 2}, nil)
+	beyond, total, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 10, Limit: 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser page 10: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestHiveRepository_ListByUser_Empty(t *testing.T) {
 
 	repo := repopostgres.NewHiveRepository(tx)
 
-	list, total, err := repo.ListByUser(ctx, uuid.New(), pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil)
+	list, total, err := repo.ListByUser(ctx, uuid.New(), pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
@@ -327,11 +327,11 @@ func TestHiveRepository_ListByUser_StableOrdering(t *testing.T) {
 		ids[i] = h.ID
 	}
 
-	firstRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4}, nil)
+	firstRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser run 1: %v", err)
 	}
-	secondRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4}, nil)
+	secondRun, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: 4}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByUser run 2: %v", err)
 	}
@@ -344,6 +344,104 @@ func TestHiveRepository_ListByUser_StableOrdering(t *testing.T) {
 			t.Fatalf("ordering unstable at index %d: %s vs %s", i, firstRun[i].ID, secondRun[i].ID)
 		}
 	}
+}
+
+func TestHiveRepository_ListByUser_SortOrder(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	userID := uuid.New()
+
+	base := time.Now().UTC()
+	names := []string{"Oldest", "Middle", "Newest"}
+	for i, name := range names {
+		h := hive.New(userID, uuid.New(), name, "")
+		h.CreatedAt = base.Add(time.Duration(i) * time.Minute)
+		h.UpdatedAt = h.CreatedAt
+		if err := repo.Create(ctx, h); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+
+	asc := "asc"
+	ascending, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, &asc)
+	if err != nil {
+		t.Fatalf("ListByUser asc: %v", err)
+	}
+	if got := hiveNamesOf(ascending); !equalHiveStrings(got, []string{"Oldest", "Middle", "Newest"}) {
+		t.Fatalf("ascending order = %v, want [Oldest Middle Newest]", got)
+	}
+
+	desc := "desc"
+	descending, _, err := repo.ListByUser(ctx, userID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, &desc)
+	if err != nil {
+		t.Fatalf("ListByUser desc: %v", err)
+	}
+	if got := hiveNamesOf(descending); !equalHiveStrings(got, []string{"Newest", "Middle", "Oldest"}) {
+		t.Fatalf("descending order = %v, want [Newest Middle Oldest]", got)
+	}
+}
+
+func TestHiveRepository_ListByApiary_SortOrder(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	repo := repopostgres.NewHiveRepository(tx)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+
+	base := time.Now().UTC()
+	names := []string{"Oldest", "Middle", "Newest"}
+	for i, name := range names {
+		h := hive.New(userID, apiaryID, name, "")
+		h.CreatedAt = base.Add(time.Duration(i) * time.Minute)
+		h.UpdatedAt = h.CreatedAt
+		if err := repo.Create(ctx, h); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+
+	desc := "desc"
+	descending, _, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, &desc)
+	if err != nil {
+		t.Fatalf("ListByApiary desc: %v", err)
+	}
+	if got := hiveNamesOf(descending); !equalHiveStrings(got, []string{"Newest", "Middle", "Oldest"}) {
+		t.Fatalf("descending order = %v, want [Newest Middle Oldest]", got)
+	}
+}
+
+func hiveNamesOf(hives []*hive.Hive) []string {
+	names := make([]string, len(hives))
+	for i, h := range hives {
+		names[i] = h.Name
+	}
+	return names
+}
+
+func equalHiveStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestHiveRepository_Update(t *testing.T) {
@@ -597,7 +695,7 @@ func TestHiveRepository_ListByApiary_OnlyOwnHivesForThatApiaryExcludingDeleted(t
 		t.Fatalf("soft-delete: %v", err)
 	}
 
-	list, total, err := repo.ListByApiary(ctx, userA, apiaryA1, pagination.Params{Page: 1, Limit: 10}, nil)
+	list, total, err := repo.ListByApiary(ctx, userA, apiaryA1, pagination.Params{Page: 1, Limit: 10}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByApiary: %v", err)
 	}
@@ -639,7 +737,7 @@ func TestHiveRepository_ListByApiary_PaginationAndSearch(t *testing.T) {
 	}
 
 	// Pagination: page 1 limit 2
-	p1, total, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: 2}, nil)
+	p1, total, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("ListByApiary p1: %v", err)
 	}
@@ -649,7 +747,7 @@ func TestHiveRepository_ListByApiary_PaginationAndSearch(t *testing.T) {
 
 	// Search: "queen"
 	search := "queen"
-	res, total, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: 10}, &search)
+	res, total, err := repo.ListByApiary(ctx, userID, apiaryID, pagination.Params{Page: 1, Limit: 10}, &search, nil)
 	if err != nil {
 		t.Fatalf("ListByApiary search: %v", err)
 	}

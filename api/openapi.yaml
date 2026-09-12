@@ -140,6 +140,16 @@ paths:
           description: Optional search filter (matched case-insensitively against name and notes). Minimum 3 characters.
           required: false
           schema: { type: string, minLength: 3 }
+        - name: sortOrder
+          in: query
+          description: >
+            Optional sort direction. Omitted keeps the endpoint's default
+            order (created_at ascending, id ascending); when given ("asc"
+            or "desc"), results are instead ordered by creation date
+            (created_at) in that direction, with id tied to the same
+            direction as a stable secondary sort.
+          required: false
+          schema: { type: string, enum: [asc, desc] }
       responses:
         "200":
           description: A page of the caller's hives.
@@ -154,7 +164,7 @@ paths:
                     items: { $ref: "#/components/schemas/HiveResponse" }
                   pagination: { $ref: "#/components/schemas/Pagination" }
         "400":
-          description: page, limit, or search is invalid.
+          description: page, limit, search, or sortOrder is invalid.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
@@ -299,6 +309,16 @@ paths:
           description: Optional search filter (matched case-insensitively against name and notes). Minimum 3 characters.
           required: false
           schema: { type: string, minLength: 3 }
+        - name: sortOrder
+          in: query
+          description: >
+            Optional sort direction. Omitted keeps the endpoint's default
+            order (created_at ascending, id ascending); when given ("asc"
+            or "desc"), results are instead ordered by creation date
+            (created_at) in that direction, with id tied to the same
+            direction as a stable secondary sort.
+          required: false
+          schema: { type: string, enum: [asc, desc] }
       responses:
         "200":
           description: A page of the caller's hives for this apiary.
@@ -313,7 +333,7 @@ paths:
                     items: { $ref: "#/components/schemas/HiveResponse" }
                   pagination: { $ref: "#/components/schemas/Pagination" }
         "400":
-          description: apiaryID is not a valid UUID, or page, limit, or search is invalid.
+          description: apiaryID is not a valid UUID, or page, limit, search, or sortOrder is invalid.
           content:
             application/json:
               schema:
@@ -482,4 +502,5 @@ components:
                   - invalid_page
                   - invalid_limit
                   - invalid_search
+                  - invalid_sort_order
               example: { apiary_id: "apiary_id_invalid" }

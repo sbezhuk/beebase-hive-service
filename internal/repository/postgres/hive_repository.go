@@ -23,6 +23,23 @@ const minSearchLength = 3
 // violation.
 const uniqueViolationCode = "23505"
 
+// createdAtOrderClause returns the ORDER BY clause for a list query. When
+// sortOrder is nil, defaultClause (the query's normal, pre-existing order)
+// is used unchanged; otherwise the list is ordered by creation date in the
+// requested direction, with id tied to the same direction as a stable
+// tiebreaker (matching the convention every other ORDER BY in this
+// repository already follows).
+func createdAtOrderClause(sortOrder *string, defaultClause string) string {
+	if sortOrder == nil {
+		return defaultClause
+	}
+	dir := "ASC"
+	if *sortOrder == "desc" {
+		dir = "DESC"
+	}
+	return fmt.Sprintf("created_at %s, id %s", dir, dir)
+}
+
 // HiveRepository implements domain/hive.Repository against PostgreSQL.
 // Every method scopes its query by user_id, so a user can never read or
 // write a hive they don't own: there's no separate ownership-check step
@@ -153,15 +170,15 @@ func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) 
 	return &h, nil
 }
 
-func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
-	return r.list(ctx, userID, nil, p, search)
+func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+	return r.list(ctx, userID, nil, p, search, sortOrder)
 }
 
-func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
-	return r.list(ctx, userID, &apiaryID, p, search)
+func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+	return r.list(ctx, userID, &apiaryID, p, search, sortOrder)
 }
 
-func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
 	countQ := `
 		SELECT count(*)
 		FROM hives
@@ -197,8 +214,8 @@ func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *u
 	}
 
 	q += fmt.Sprintf(`
-		ORDER BY created_at ASC, id ASC
-		LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`, createdAtOrderClause(sortOrder, "created_at ASC, id ASC"), argIdx, argIdx+1)
 	listArgs = append(listArgs, p.Limit, p.Offset())
 
 	var total int

@@ -98,20 +98,24 @@ func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive
 
 // List returns the page of hives described by p, out of every hive
 // belonging to userID. When search is non-nil its value is matched
-// case-insensitively against the hive's name and notes fields.
-func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
-	return s.hives.ListByUser(ctx, userID, p, search)
+// case-insensitively against the hive's name and notes fields. When
+// sortOrder is non-nil ("asc" or "desc") the page is ordered by creation
+// date in that direction instead of the repository's default order.
+func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+	return s.hives.ListByUser(ctx, userID, p, search, sortOrder)
 }
 
 // ListByApiary returns the page of hives described by p belonging to
 // userID under apiaryID, after confirming with apiary-service that userID
 // actually owns that apiary. When search is non-nil its value is matched
-// case-insensitively against the hive's name and notes fields.
-func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search *string) ([]*hive.Hive, int, error) {
+// case-insensitively against the hive's name and notes fields. When
+// sortOrder is non-nil ("asc" or "desc") the page is ordered by creation
+// date in that direction instead of the repository's default order.
+func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
 	if err := s.apiaries.Verify(ctx, accessToken, apiaryID); err != nil {
 		return nil, 0, err
 	}
-	return s.hives.ListByApiary(ctx, userID, apiaryID, p, search)
+	return s.hives.ListByApiary(ctx, userID, apiaryID, p, search, sortOrder)
 }
 
 // Update replaces the editable fields of the hive identified by hiveID,
