@@ -1378,6 +1378,55 @@ func TestHiveFlow_NeedsInspectionFilter_FalseOrAbsentReturnsEverything(t *testin
 	}
 }
 
+// TestHiveFlow_ListByApiary_NeedsInspectionFilter proves the apiary-scoped
+// list combines its apiary filter with needs_inspection correctly (not just
+// each filter in isolation): a stale hive in a different apiary must not
+// leak into this apiary's filtered results.
+func TestHiveFlow_ListByApiary_NeedsInspectionFilter(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryA := uuid.New()
+	apiaryB := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryA)
+	stack.apiary.allow(token, apiaryB)
+
+	create := func(apiaryID uuid.UUID, name string) hivehttp.Response {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiaryID.String(),
+			"name":      name,
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: status = %d, want %d", name, resp.StatusCode, http.StatusCreated)
+		}
+		var h hivehttp.Response
+		decodeJSON(t, resp, &h)
+		return h
+	}
+
+	staleInA := create(apiaryA, "Stale in A")
+	recentInA := create(apiaryA, "Recent in A")
+	staleInB := create(apiaryB, "Stale in B")
+
+	now := time.Now().UTC()
+	stack.inspections.setLatest(staleInA.ID, now.AddDate(0, 0, -20))
+	stack.inspections.setLatest(recentInA.ID, now.AddDate(0, 0, -1))
+	stack.inspections.setLatest(staleInB.ID, now.AddDate(0, 0, -20))
+
+	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryA.String()+"/hives?needs_inspection=true", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var page pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &page)
+	if page.Pagination.Total != 1 {
+		t.Fatalf("total = %d, want 1 (only staleInA - staleInB belongs to a different apiary)", page.Pagination.Total)
+	}
+	if page.Items[0].ID != staleInA.ID {
+		t.Errorf("got hive %s, want %s", page.Items[0].ID, staleInA.ID)
+	}
+}
+
 func TestHiveFlow_ApiaryIDsWithHives(t *testing.T) {
 	stack := newTestStack(t)
 	userID := uuid.New()
