@@ -34,8 +34,27 @@ type Repository interface {
 	// case-insensitively against name and notes; a nil search means no
 	// filter. When sortOrder is non-nil ("asc" or "desc") the page is
 	// ordered by creation date in that direction instead of the default
-	// order; a nil sortOrder keeps the default order.
-	ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string) (hives []*Hive, total int, err error)
+	// order; a nil sortOrder keeps the default order. When
+	// needsInspectionOnly is true, results are additionally restricted to
+	// hive ids in needsInspectionHiveIDs (computed by the application
+	// layer from inspection-service's hive-status - this repository has
+	// no notion of inspections of its own); an empty
+	// needsInspectionHiveIDs then correctly yields zero rows, not "no
+	// filter". When needsInspectionOnly is false, needsInspectionHiveIDs
+	// is ignored.
+	ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) (hives []*Hive, total int, err error)
+	// ListIDsByUser returns the id of every non-deleted hive userID owns,
+	// unpaginated. Used only to build the "needs inspection" filter set
+	// (see ListByUser) - never a user-facing list endpoint - so it's not
+	// a user-facing list endpoint's usual page-of-results shape.
+	ListIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// DistinctApiaryIDsWithHives returns the id of every apiary userID
+	// owns at least one non-deleted hive under. Used by apiary-service
+	// (via GET /api/v1/hives/apiary-ids-with-hives) to filter its own
+	// apiary listings to "apiaries without hives" - apiary-service has no
+	// notion of hives of its own, so it asks here instead of duplicating
+	// this service's data.
+	DistinctApiaryIDsWithHives(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 	// Update persists h.Name, h.Notes, and h.UpdatedAt for the hive
 	// identified by h.ID, scoped to h.UserID. ApiaryID is immutable and
 	// never updated.
@@ -46,8 +65,9 @@ type Repository interface {
 	// case-insensitively against name and notes; a nil search means no
 	// filter. When sortOrder is non-nil ("asc" or "desc") the page is
 	// ordered by creation date in that direction instead of the default
-	// order; a nil sortOrder keeps the default order.
-	ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string) (hives []*Hive, total int, err error)
+	// order; a nil sortOrder keeps the default order. needsInspectionOnly
+	// and needsInspectionHiveIDs behave exactly as in ListByUser.
+	ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) (hives []*Hive, total int, err error)
 	// ListAllByApiary returns every hive under apiaryID belonging to userID,
 	// including ones a prior soft-delete already marked gone (deliberately
 	// not filtered by deleted_at). Used only to drive DeleteByApiary's

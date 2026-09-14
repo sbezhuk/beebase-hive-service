@@ -28,15 +28,15 @@ import (
 // string, since it's the same meaning from the client's point of view
 // regardless of which service returned it.
 const (
-	CodeHiveNotFound     = "hive_not_found"
-	CodeInvalidHiveID    = "invalid_hive_id"
-	CodeApiaryNotFound   = "apiary_not_found"
-	CodeInvalidApiaryID  = "invalid_apiary_id"
-	CodeImageNotFound    = "image_not_found"
-	CodeInvalidSearch    = "invalid_search"
-	CodeInvalidSortOrder = "invalid_sort_order"
-	CodeHiveLimitReached = "hive_limit_reached"
-	CodeHiveNameExists   = "hive_name_exists"
+	CodeHiveNotFound      = "hive_not_found"
+	CodeInvalidHiveID     = "invalid_hive_id"
+	CodeApiaryNotFound    = "apiary_not_found"
+	CodeInvalidApiaryID   = "invalid_apiary_id"
+	CodeImageNotFound     = "image_not_found"
+	CodeInvalidSearch     = "invalid_search"
+	CodeInvalidSortOrder  = "invalid_sort_order"
+	CodeHiveLimitReached  = "hive_limit_reached"
+	CodeHiveNameExists    = "hive_name_exists"
 	CodeMediaLimitReached = "media_limit_reached"
 )
 
@@ -92,7 +92,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 // List handles GET /hives.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	userID, _, ok := h.requireAuth(w, r)
+	userID, token, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
@@ -104,8 +104,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationError(w, fields)
 		return
 	}
+	needsInspection := parseNeedsInspection(r)
 
-	hives, total, err := h.service.List(r.Context(), userID, p, search, sortOrder)
+	hives, total, err := h.service.List(r.Context(), userID, token, p, search, sortOrder, needsInspection)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -133,14 +134,41 @@ func (h *Handler) ListByApiary(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteValidationError(w, fields)
 		return
 	}
+	needsInspection := parseNeedsInspection(r)
 
-	hives, total, err := h.service.ListByApiary(r.Context(), userID, token, apiaryID, p, search, sortOrder)
+	hives, total, err := h.service.ListByApiary(r.Context(), userID, token, apiaryID, p, search, sortOrder, needsInspection)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives, h.publicBaseURL), p, total))
+}
+
+// parseNeedsInspection reads the optional "needs_inspection" query
+// parameter: only the exact value "true" filters; anything else
+// (absent, "false", or garbage) leaves results unfiltered - there's no
+// invalid value to reject here, unlike search/sortOrder.
+func parseNeedsInspection(r *http.Request) bool {
+	return r.URL.Query().Get("needs_inspection") == "true"
+}
+
+// ApiaryIDsWithHives handles GET /api/v1/hives/apiary-ids-with-hives.
+// Called by apiary-service to filter its own apiary listings to
+// "apiaries without hives", never directly by an end-user client.
+func (h *Handler) ApiaryIDsWithHives(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.requireUserID(w, r)
+	if !ok {
+		return
+	}
+
+	ids, err := h.service.ApiaryIDsWithHives(r.Context(), userID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, newApiaryIDsWithHivesResponse(ids))
 }
 
 func parseSearch(r *http.Request, fields map[string]string) (*string, map[string]string) {

@@ -35,6 +35,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      secrets:
+        - github_token
     restart: unless-stopped
     env_file:
       - .env
@@ -52,3 +54,12 @@ services:
 
 volumes:
   beebase_hive_postgres_data:
+
+secrets:
+  # A read-scoped GitHub PAT (or fine-grained token with contents:read
+  # on beebase-common) for fetching that private module at build time -
+  # see the Dockerfile for why. Set BEEBASE_COMMON_GH_TOKEN in your
+  # shell/`.env` before `docker compose up --build`; never committed,
+  # never baked into an image layer.
+  github_token:
+    environment: BEEBASE_COMMON_GH_TOKEN

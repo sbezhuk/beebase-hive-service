@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sbezhuk/beebase-common/inspectionwarning"
 	"github.com/sbezhuk/beebase-common/pagination"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 )
@@ -21,16 +22,17 @@ import (
 // transport layer) and passes it straight through to the repository,
 // which enforces ownership at the query level.
 type Service struct {
-	hives         hive.Repository
-	apiaries      ApiaryVerifier
-	inspections   InspectionDeleter
-	media         MediaClient
-	subscriptions EntitlementResolver
+	hives            hive.Repository
+	apiaries         ApiaryVerifier
+	inspections      InspectionDeleter
+	inspectionStatus InspectionStatusProvider
+	media            MediaClient
+	subscriptions    EntitlementResolver
 }
 
 // NewService constructs a Service.
-func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, media MediaClient, subscriptions EntitlementResolver) *Service {
-	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, media: media, subscriptions: subscriptions}
+func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, inspectionStatus InspectionStatusProvider, media MediaClient, subscriptions EntitlementResolver) *Service {
+	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, inspectionStatus: inspectionStatus, media: media, subscriptions: subscriptions}
 }
 
 // Create creates a new hive owned by userID under in.ApiaryID, after
@@ -101,8 +103,21 @@ func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive
 // case-insensitively against the hive's name and notes fields. When
 // sortOrder is non-nil ("asc" or "desc") the page is ordered by creation
 // date in that direction instead of the repository's default order.
-func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
-	return s.hives.ListByUser(ctx, userID, p, search, sortOrder)
+// When needsInspection is true, results are additionally restricted to
+// hives that currently need inspection (see beebase-common/
+// inspectionwarning) - accessToken is only ever used for that filter,
+// forwarded to inspection-service so it can compute the answer against
+// its own single configured threshold and inspection dates.
+func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string, p pagination.Params, search, sortOrder *string, needsInspection bool) ([]*hive.Hive, int, error) {
+	var needsInspectionIDs []uuid.UUID
+	if needsInspection {
+		ids, err := s.needsInspectionHiveIDs(ctx, userID, accessToken)
+		if err != nil {
+			return nil, 0, err
+		}
+		needsInspectionIDs = ids
+	}
+	return s.hives.ListByUser(ctx, userID, p, search, sortOrder, needsInspection, needsInspectionIDs)
 }
 
 // ListByApiary returns the page of hives described by p belonging to
@@ -111,11 +126,62 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Param
 // case-insensitively against the hive's name and notes fields. When
 // sortOrder is non-nil ("asc" or "desc") the page is ordered by creation
 // date in that direction instead of the repository's default order.
-func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+// needsInspection behaves exactly as in List.
+func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspection bool) ([]*hive.Hive, int, error) {
 	if err := s.apiaries.Verify(ctx, accessToken, apiaryID); err != nil {
 		return nil, 0, err
 	}
-	return s.hives.ListByApiary(ctx, userID, apiaryID, p, search, sortOrder)
+
+	var needsInspectionIDs []uuid.UUID
+	if needsInspection {
+		ids, err := s.needsInspectionHiveIDs(ctx, userID, accessToken)
+		if err != nil {
+			return nil, 0, err
+		}
+		needsInspectionIDs = ids
+	}
+	return s.hives.ListByApiary(ctx, userID, apiaryID, p, search, sortOrder, needsInspection, needsInspectionIDs)
+}
+
+// needsInspectionHiveIDs returns the id of every hive userID owns that
+// currently needs inspection: fetches userID's own hive ids (this
+// service's own data) and inspection-service's hive-status (the latest
+// InspectedAt per hive, plus the configured threshold), then applies the
+// shared inspectionwarning.NeedsInspection rule to each - a hive absent
+// from inspection-service's map has never been inspected, and so always
+// needs inspection regardless of the threshold.
+func (s *Service) needsInspectionHiveIDs(ctx context.Context, userID uuid.UUID, accessToken string) ([]uuid.UUID, error) {
+	allHiveIDs, err := s.hives.ListIDsByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("hive: list hive ids: %w", err)
+	}
+
+	latestByHive, thresholdDays, err := s.inspectionStatus.HiveInspectionStatus(ctx, accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("hive: get inspection status: %w", err)
+	}
+
+	now := time.Now().UTC()
+	needing := make([]uuid.UUID, 0, len(allHiveIDs))
+	for _, id := range allHiveIDs {
+		var latest *time.Time
+		if t, ok := latestByHive[id]; ok {
+			latest = &t
+		}
+		if inspectionwarning.NeedsInspection(latest, thresholdDays, now) {
+			needing = append(needing, id)
+		}
+	}
+	return needing, nil
+}
+
+// ApiaryIDsWithHives returns the id of every apiary userID owns at least
+// one non-deleted hive under. Backs GET
+// /api/v1/hives/apiary-ids-with-hives, which apiary-service calls to
+// filter its own apiary listings to "apiaries without hives" - it has
+// no notion of hives of its own.
+func (s *Service) ApiaryIDsWithHives(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.hives.DistinctApiaryIDsWithHives(ctx, userID)
 }
 
 // Update replaces the editable fields of the hive identified by hiveID,

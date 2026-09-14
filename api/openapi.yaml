@@ -150,6 +150,20 @@ paths:
             direction as a stable secondary sort.
           required: false
           schema: { type: string, enum: [asc, desc] }
+        - name: needs_inspection
+          in: query
+          description: >
+            When exactly "true", restricts results to hives that
+            currently need inspection: never inspected, or last
+            inspected more than the configured warning threshold ago
+            (see GET /api/v1/statistics/needs-attention on
+            statistics-service, which reports the same threshold and the
+            same count). Any other value (including "false", or
+            omitting it) leaves results unfiltered. Computed live
+            against inspection-service on every request - the caller
+            never supplies the threshold itself.
+          required: false
+          schema: { type: string, enum: [true, false] }
       responses:
         "200":
           description: A page of the caller's hives.
@@ -170,6 +184,11 @@ paths:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
         "401":
           description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: A required upstream service (inspection-service) failed or was unreachable while computing needs_inspection.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -319,6 +338,14 @@ paths:
             direction as a stable secondary sort.
           required: false
           schema: { type: string, enum: [asc, desc] }
+        - name: needs_inspection
+          in: query
+          description: >
+            When exactly "true", restricts results to hives in this
+            apiary that currently need inspection. See the same
+            parameter on GET /api/v1/hives for the full rule.
+          required: false
+          schema: { type: string, enum: [true, false] }
       responses:
         "200":
           description: A page of the caller's hives for this apiary.

@@ -55,3 +55,20 @@ func newListResponse(hives []*hive.Hive, publicBaseURL string) []Response {
 	}
 	return out
 }
+
+// ApiaryIDsWithHivesResponse is the public representation of GET
+// /api/v1/hives/apiary-ids-with-hives: every apiary id the caller owns
+// at least one non-deleted hive under.
+type ApiaryIDsWithHivesResponse struct {
+	ApiaryIDs []uuid.UUID `json:"apiary_ids"`
+}
+
+// newApiaryIDsWithHivesResponse builds an ApiaryIDsWithHivesResponse.
+// ApiaryIDs is never nil, so it renders as "[]" rather than "null" when
+// the caller has no hives at all.
+func newApiaryIDsWithHivesResponse(ids []uuid.UUID) ApiaryIDsWithHivesResponse {
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	return ApiaryIDsWithHivesResponse{ApiaryIDs: ids}
+}
