@@ -2,6 +2,7 @@ package hive
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -41,6 +42,20 @@ type MediaClient interface {
 	// DeleteByIDs hard-deletes every media item in ids, used when the
 	// hive itself is being cascade-deleted.
 	DeleteByIDs(ctx context.Context, accessToken string, ids []uuid.UUID) error
+}
+
+// InspectionStatusProvider is this service's dependency on
+// inspection-service, used only when a hive listing is filtered to
+// "needs inspection". It's the single source of truth for both the
+// warning threshold and the raw inspection dates - this service never
+// maintains its own copy of either, so its filter always agrees with
+// statistics-service's Dashboard metric, which reads the same endpoint.
+type InspectionStatusProvider interface {
+	// HiveInspectionStatus returns, for whoever presented accessToken,
+	// the latest InspectedAt for every hive they've ever inspected (a
+	// hive absent from the map has never been inspected), and the
+	// currently configured inspection warning threshold in days.
+	HiveInspectionStatus(ctx context.Context, accessToken string) (latestByHive map[uuid.UUID]time.Time, thresholdDays int, err error)
 }
 
 // Entitlement values returned by subscription-service.

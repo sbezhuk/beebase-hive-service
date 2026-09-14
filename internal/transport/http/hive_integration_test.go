@@ -101,10 +101,26 @@ type fakeCascadeTarget struct {
 	mu       sync.Mutex
 	received []*http.Request
 	ownedIDs map[uuid.UUID]bool // mediaID -> belongs to the caller
+
+	// hiveStatus/thresholdDays back GET /api/v1/inspections/hive-status
+	// when this fake stands in for inspection-service - irrelevant when
+	// it stands in for media-service instead.
+	hiveStatus    map[uuid.UUID]time.Time
+	thresholdDays int
 }
 
 func newFakeCascadeTarget() *fakeCascadeTarget {
-	return &fakeCascadeTarget{ownedIDs: map[uuid.UUID]bool{}}
+	return &fakeCascadeTarget{ownedIDs: map[uuid.UUID]bool{}, hiveStatus: map[uuid.UUID]time.Time{}, thresholdDays: 14}
+}
+
+// setLatest registers hiveID's latest inspection date, so this fake's
+// GET /api/v1/inspections/hive-status endpoint (when standing in for
+// inspection-service) reports it - a hive never passed to setLatest is
+// simply absent, exactly like a never-inspected hive would be.
+func (f *fakeCascadeTarget) setLatest(hiveID uuid.UUID, latest time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hiveStatus[hiveID] = latest
 }
 
 // own registers each of ids as belonging to the caller, so this fake's GET
@@ -127,9 +143,33 @@ func (f *fakeCascadeTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/media":
 		f.serveList(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/inspections/hive-status":
+		f.serveHiveStatus(w)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// serveHiveStatus answers GET /api/v1/inspections/hive-status when this
+// fake stands in for inspection-service.
+func (f *fakeCascadeTarget) serveHiveStatus(w http.ResponseWriter) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	type item struct {
+		HiveID            uuid.UUID `json:"hive_id"`
+		LatestInspectedAt time.Time `json:"latest_inspected_at"`
+	}
+	hives := make([]item, 0, len(f.hiveStatus))
+	for id, latest := range f.hiveStatus {
+		hives = append(hives, item{HiveID: id, LatestInspectedAt: latest})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"threshold_days": f.thresholdDays,
+		"hives":          hives,
+	})
 }
 
 // serveList answers GET /api/v1/media?ids=&ids=...: returns every
@@ -286,7 +326,7 @@ func newTestStack(t *testing.T) *testStack {
 	inspectionDeleter := inspectionclient.New(inspectionServer.URL)
 	mediaDeleter := mediaclient.New(mediaServer.URL)
 	subClient := subscriptionclient.New(subServer.URL)
-	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, mediaDeleter, subClient)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subClient)
 	log := logger.New("development", "error")
 	handler := hivehttp.NewHandler(hiveService, log, "http://localhost:8080")
 
@@ -1266,3 +1306,128 @@ func TestHiveFlow_MediaLimit(t *testing.T) {
 	}
 }
 
+func TestHiveFlow_NeedsInspectionFilter(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	create := func(name string) hivehttp.Response {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiaryID.String(),
+			"name":      name,
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: status = %d, want %d", name, resp.StatusCode, http.StatusCreated)
+		}
+		var h hivehttp.Response
+		decodeJSON(t, resp, &h)
+		return h
+	}
+
+	recent := create("Recently inspected")
+	stale := create("Stale")
+	create("Never inspected") // deliberately not registered below
+
+	now := time.Now().UTC()
+	stack.inspections.setLatest(recent.ID, now.AddDate(0, 0, -1))
+	stack.inspections.setLatest(stale.ID, now.AddDate(0, 0, -20))
+
+	resp := stack.request(t, http.MethodGet, "/api/v1/hives?needs_inspection=true", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list needs_inspection: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var page pagination.Response[hivehttp.Response]
+	decodeJSON(t, resp, &page)
+	if page.Pagination.Total != 2 {
+		t.Fatalf("total = %d, want 2 (stale + never inspected)", page.Pagination.Total)
+	}
+	for _, h := range page.Items {
+		if h.ID == recent.ID {
+			t.Error("recently inspected hive should not appear in needs_inspection filter")
+		}
+	}
+}
+
+func TestHiveFlow_NeedsInspectionFilter_FalseOrAbsentReturnsEverything(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryID)
+
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+		"apiary_id": apiaryID.String(),
+		"name":      "H1",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	for _, path := range []string{"/api/v1/hives", "/api/v1/hives?needs_inspection=false", "/api/v1/hives?needs_inspection=garbage"} {
+		resp := stack.request(t, http.MethodGet, path, token, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want %d", path, resp.StatusCode, http.StatusOK)
+		}
+		var page pagination.Response[hivehttp.Response]
+		decodeJSON(t, resp, &page)
+		if page.Pagination.Total != 1 {
+			t.Errorf("GET %s: total = %d, want 1 (unfiltered)", path, page.Pagination.Total)
+		}
+	}
+}
+
+func TestHiveFlow_ApiaryIDsWithHives(t *testing.T) {
+	stack := newTestStack(t)
+	userID := uuid.New()
+	apiaryA := uuid.New()
+	apiaryB := uuid.New()
+	apiaryEmpty := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, apiaryA)
+	stack.apiary.allow(token, apiaryB)
+	stack.apiary.allow(token, apiaryEmpty)
+
+	for _, apiaryID := range []uuid.UUID{apiaryA, apiaryA, apiaryB} {
+		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
+			"apiary_id": apiaryID.String(),
+			"name":      "H-" + uuid.New().String(),
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create hive under %s: status = %d, want %d", apiaryID, resp.StatusCode, http.StatusCreated)
+		}
+	}
+
+	resp := stack.request(t, http.MethodGet, "/api/v1/hives/apiary-ids-with-hives", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("apiary-ids-with-hives: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var body struct {
+		ApiaryIDs []uuid.UUID `json:"apiary_ids"`
+	}
+	decodeJSON(t, resp, &body)
+
+	if len(body.ApiaryIDs) != 2 {
+		t.Fatalf("apiary_ids = %v, want 2 entries (apiaryA once, apiaryB once)", body.ApiaryIDs)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, id := range body.ApiaryIDs {
+		got[id] = true
+	}
+	if !got[apiaryA] || !got[apiaryB] {
+		t.Errorf("apiary_ids = %v, want apiaryA and apiaryB", body.ApiaryIDs)
+	}
+	if got[apiaryEmpty] {
+		t.Error("apiaryEmpty (no hives) should not appear in apiary-ids-with-hives")
+	}
+}
+
+func TestHiveFlow_ApiaryIDsWithHives_WithoutTokenIsUnauthorized(t *testing.T) {
+	stack := newTestStack(t)
+
+	resp := stack.request(t, http.MethodGet, "/api/v1/hives/apiary-ids-with-hives", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}

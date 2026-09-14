@@ -170,15 +170,15 @@ func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) 
 	return &h, nil
 }
 
-func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
-	return r.list(ctx, userID, nil, p, search, sortOrder)
+func (r *HiveRepository) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*hive.Hive, int, error) {
+	return r.list(ctx, userID, nil, p, search, sortOrder, needsInspectionOnly, needsInspectionHiveIDs)
 }
 
-func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
-	return r.list(ctx, userID, &apiaryID, p, search, sortOrder)
+func (r *HiveRepository) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*hive.Hive, int, error) {
+	return r.list(ctx, userID, &apiaryID, p, search, sortOrder, needsInspectionOnly, needsInspectionHiveIDs)
 }
 
-func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*hive.Hive, int, error) {
 	countQ := `
 		SELECT count(*)
 		FROM hives
@@ -197,6 +197,22 @@ func (r *HiveRepository) list(ctx context.Context, userID uuid.UUID, apiaryID *u
 		countQ += cond
 		q += cond
 		countArgs = append(countArgs, *apiaryID)
+		argIdx++
+	}
+
+	if needsInspectionOnly {
+		// needsInspectionHiveIDs is already the full "needs inspection"
+		// set the application layer computed - possibly empty, which
+		// correctly matches zero rows here (= ANY of an empty array is
+		// false for every row), not "no filter".
+		cond := fmt.Sprintf(" AND id = ANY($%d)", argIdx)
+		countQ += cond
+		q += cond
+		ids := needsInspectionHiveIDs
+		if ids == nil {
+			ids = []uuid.UUID{}
+		}
+		countArgs = append(countArgs, ids)
 		argIdx++
 	}
 
@@ -307,6 +323,54 @@ func (r *HiveRepository) ListAllByApiary(ctx context.Context, userID, apiaryID u
 	}
 
 	return hives, nil
+}
+
+func (r *HiveRepository) ListIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	const q = `SELECT id FROM hives WHERE user_id = $1 AND deleted_at IS NULL`
+
+	rows, err := r.db.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list hive ids by user: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("postgres: scan hive id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: list hive ids by user: %w", err)
+	}
+
+	return ids, nil
+}
+
+func (r *HiveRepository) DistinctApiaryIDsWithHives(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	const q = `SELECT DISTINCT apiary_id FROM hives WHERE user_id = $1 AND deleted_at IS NULL`
+
+	rows, err := r.db.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: distinct apiary ids with hives: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("postgres: scan apiary id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: distinct apiary ids with hives: %w", err)
+	}
+
+	return ids, nil
 }
 
 func (r *HiveRepository) HardDelete(ctx context.Context, userID, hiveID uuid.UUID) error {

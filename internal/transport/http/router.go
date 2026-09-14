@@ -38,6 +38,12 @@ func NewRouter(
 		r.Route("/api/v1/hives", func(r chi.Router) {
 			r.Post("/", hiveHandler.Create)
 			r.Get("/", hiveHandler.List)
+			// Internal-only: called by apiary-service to filter its own
+			// apiary listings to "apiaries without hives", never directly
+			// by an end-user client. Registered as a static sibling of
+			// "/{hiveID}" rather than under it, so it can never be
+			// confused with a hive id.
+			r.Get("/apiary-ids-with-hives", hiveHandler.ApiaryIDsWithHives)
 			r.Get("/{hiveID}", hiveHandler.Get)
 			r.Put("/{hiveID}", hiveHandler.Update)
 			r.Delete("/{hiveID}", hiveHandler.Delete)

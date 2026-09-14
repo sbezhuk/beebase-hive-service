@@ -8,9 +8,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/sbezhuk/beebase-common/inspectionwarning"
 	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
@@ -83,12 +85,16 @@ func (f *fakeRepo) GetByID(_ context.Context, userID, hiveID uuid.UUID) (*hive.H
 	return &cp, nil
 }
 
-func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*hive.Hive, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	needsInspectionSet := toSet(needsInspectionHiveIDs)
 	var all []*hive.Hive
 	for _, h := range f.byID {
 		if h.UserID == userID && h.DeletedAt == nil {
+			if needsInspectionOnly && !needsInspectionSet[h.ID] {
+				continue
+			}
 			if search != nil && len(*search) >= 3 {
 				s := strings.ToLower(*search)
 				if !strings.Contains(strings.ToLower(h.Name), s) && !strings.Contains(strings.ToLower(h.Notes), s) {
@@ -147,12 +153,16 @@ func (f *fakeRepo) hasActiveNameLocked(apiaryID uuid.UUID, name string, excludeI
 	return false
 }
 
-func (f *fakeRepo) ListByApiary(_ context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string) ([]*hive.Hive, int, error) {
+func (f *fakeRepo) ListByApiary(_ context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*hive.Hive, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	needsInspectionSet := toSet(needsInspectionHiveIDs)
 	var all []*hive.Hive
 	for _, h := range f.byID {
 		if h.UserID == userID && h.ApiaryID == apiaryID && h.DeletedAt == nil {
+			if needsInspectionOnly && !needsInspectionSet[h.ID] {
+				continue
+			}
 			if search != nil && len(*search) >= 3 {
 				s := strings.ToLower(*search)
 				if !strings.Contains(strings.ToLower(h.Name), s) && !strings.Contains(strings.ToLower(h.Notes), s) {
@@ -210,6 +220,72 @@ func (f *fakeRepo) HardDelete(_ context.Context, userID, hiveID uuid.UUID) error
 	}
 	delete(f.byID, hiveID)
 	return nil
+}
+
+func (f *fakeRepo) ListIDsByUser(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []uuid.UUID
+	for _, h := range f.byID {
+		if h.UserID == userID && h.DeletedAt == nil {
+			ids = append(ids, h.ID)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	return ids, nil
+}
+
+func (f *fakeRepo) DistinctApiaryIDsWithHives(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := map[uuid.UUID]bool{}
+	var ids []uuid.UUID
+	for _, h := range f.byID {
+		if h.UserID == userID && h.DeletedAt == nil && !seen[h.ApiaryID] {
+			seen[h.ApiaryID] = true
+			ids = append(ids, h.ApiaryID)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	return ids, nil
+}
+
+func toSet(ids []uuid.UUID) map[uuid.UUID]bool {
+	set := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
+}
+
+// --- fake inspection status provider ---
+
+// fakeInspectionStatusProvider simulates inspection-service's
+// GET /api/v1/inspections/hive-status: a fixed threshold plus a
+// token-scoped map of hive id -> latest inspected_at (a hive absent
+// from the map has never been inspected).
+type fakeInspectionStatusProvider struct {
+	thresholdDays int
+	byToken       map[string]map[uuid.UUID]time.Time
+	err           error
+}
+
+func newFakeInspectionStatusProvider(thresholdDays int) *fakeInspectionStatusProvider {
+	return &fakeInspectionStatusProvider{thresholdDays: thresholdDays, byToken: map[string]map[uuid.UUID]time.Time{}}
+}
+
+func (f *fakeInspectionStatusProvider) setLatest(token string, hiveID uuid.UUID, latest time.Time) {
+	if f.byToken[token] == nil {
+		f.byToken[token] = map[uuid.UUID]time.Time{}
+	}
+	f.byToken[token][hiveID] = latest
+}
+
+func (f *fakeInspectionStatusProvider) HiveInspectionStatus(_ context.Context, accessToken string) (map[uuid.UUID]time.Time, int, error) {
+	if f.err != nil {
+		return nil, 0, f.err
+	}
+	return f.byToken[accessToken], f.thresholdDays, nil
 }
 
 // --- fake apiary verifier ---
@@ -372,7 +448,7 @@ func (f *fakeSubscriptionClient) GetEntitlement(_ context.Context, _ string) (st
 // for every test that isn't specifically exercising the delete cascade,
 // images, or entitlement limits.
 func newService(repo *fakeRepo, apiaries *fakeApiaryVerifier) *apphive.Service {
-	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeMediaClient(), newFakeSubscriptionClient())
+	return apphive.NewService(repo, apiaries, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), newFakeSubscriptionClient())
 }
 
 func mustCreate(t *testing.T, repo *fakeRepo, h *hive.Hive) {
@@ -491,7 +567,7 @@ func TestCreate_WithImages_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -529,7 +605,7 @@ func TestCreate_WithImages_RejectsForeignMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient() // foreign is deliberately never own()'d
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -545,7 +621,7 @@ func TestCreate_WithImages_RejectsForeignMedia(t *testing.T) {
 		t.Fatalf("Create with foreign media: got %v, want ErrImageNotFound", err)
 	}
 
-	list, _, err := repo.ListByUser(context.Background(), userID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
+	list, _, err := repo.ListByUser(context.Background(), userID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
@@ -628,7 +704,7 @@ func TestList_ReturnsOnlyOwnHives(t *testing.T) {
 		t.Fatalf("create B1: %v", err)
 	}
 
-	list, total, err := svc.List(context.Background(), userA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
+	list, total, err := svc.List(context.Background(), userA, tokenA, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -659,7 +735,7 @@ func TestList_Pagination(t *testing.T) {
 		}
 	}
 
-	firstPage, total, err := svc.List(context.Background(), userID, pagination.Params{Page: 1, Limit: 2}, nil, nil)
+	firstPage, total, err := svc.List(context.Background(), userID, token, pagination.Params{Page: 1, Limit: 2}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("List page 1: %v", err)
 	}
@@ -670,7 +746,7 @@ func TestList_Pagination(t *testing.T) {
 		t.Fatalf("page 1 returned %d hives, want 2", len(firstPage))
 	}
 
-	lastPage, total, err := svc.List(context.Background(), userID, pagination.Params{Page: 3, Limit: 2}, nil, nil)
+	lastPage, total, err := svc.List(context.Background(), userID, token, pagination.Params{Page: 3, Limit: 2}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("List page 3: %v", err)
 	}
@@ -681,7 +757,7 @@ func TestList_Pagination(t *testing.T) {
 		t.Fatalf("page 3 returned %d hives, want 1", len(lastPage))
 	}
 
-	beyond, total, err := svc.List(context.Background(), userID, pagination.Params{Page: 10, Limit: 2}, nil, nil)
+	beyond, total, err := svc.List(context.Background(), userID, token, pagination.Params{Page: 10, Limit: 2}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("List page 10: %v", err)
 	}
@@ -696,7 +772,7 @@ func TestList_Pagination(t *testing.T) {
 func TestList_Empty(t *testing.T) {
 	svc := newService(newFakeRepo(), newFakeApiaryVerifier())
 
-	list, total, err := svc.List(context.Background(), uuid.New(), pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
+	list, total, err := svc.List(context.Background(), uuid.New(), "", pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -734,7 +810,7 @@ func TestListByApiary_ReturnsOnlyOwnHivesForThatApiary(t *testing.T) {
 		t.Fatalf("create B-Hive1: %v", err)
 	}
 
-	list, total, err := svc.ListByApiary(context.Background(), userA, tokenA, apiaryA1, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
+	list, total, err := svc.ListByApiary(context.Background(), userA, tokenA, apiaryA1, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary: %v", err)
 	}
@@ -765,7 +841,7 @@ func TestListByApiary_Pagination(t *testing.T) {
 		}
 	}
 
-	firstPage, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 2}, nil, nil)
+	firstPage, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 2}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary page 1: %v", err)
 	}
@@ -776,7 +852,7 @@ func TestListByApiary_Pagination(t *testing.T) {
 		t.Fatalf("page 1 returned %d hives, want 2", len(firstPage))
 	}
 
-	lastPage, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 3, Limit: 2}, nil, nil)
+	lastPage, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 3, Limit: 2}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary page 3: %v", err)
 	}
@@ -787,7 +863,7 @@ func TestListByApiary_Pagination(t *testing.T) {
 		t.Fatalf("page 3 returned %d hives, want 1", len(lastPage))
 	}
 
-	beyond, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 10, Limit: 2}, nil, nil)
+	beyond, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 10, Limit: 2}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary page 10: %v", err)
 	}
@@ -819,7 +895,7 @@ func TestListByApiary_Search(t *testing.T) {
 	}
 
 	search := "queen"
-	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 10}, &search, nil)
+	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 10}, &search, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary search: %v", err)
 	}
@@ -831,7 +907,7 @@ func TestListByApiary_Search(t *testing.T) {
 	}
 
 	searchWorker := "swarm"
-	list, total, err = svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 10}, &searchWorker, nil)
+	list, total, err = svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: 10}, &searchWorker, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary search: %v", err)
 	}
@@ -851,7 +927,7 @@ func TestListByApiary_Empty(t *testing.T) {
 	token := "token"
 	verifier.allow(token, apiaryID)
 
-	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
+	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("ListByApiary: %v", err)
 	}
@@ -871,7 +947,7 @@ func TestListByApiary_UnownedApiaryReturnsErrApiaryNotFound(t *testing.T) {
 	token := "token"
 	// Do not allow token for apiaryID
 
-	_, _, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil)
+	_, _, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false)
 	if !errors.Is(err, apphive.ErrApiaryNotFound) {
 		t.Fatalf("ListByApiary on unowned apiary: got %v, want ErrApiaryNotFound", err)
 	}
@@ -978,7 +1054,7 @@ func TestUpdate_ImagesNil_LeavesImagesUntouched(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1014,7 +1090,7 @@ func TestUpdate_ImagesEmpty_ClearsReferencesWithoutDeletingFiles(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1055,7 +1131,7 @@ func TestUpdate_ImagesReplacedWholesale(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1096,7 +1172,7 @@ func TestUpdate_ImagesRejectsForeignMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient() // foreign is deliberately never own()'d
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1142,7 +1218,7 @@ func TestUpdate_ImagesAcceptsNewlyOwnedMedia(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1172,7 +1248,7 @@ func TestCreate_WithImages_MaxLimit_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1201,7 +1277,7 @@ func TestCreate_WithImages_ExceedsLimit_ReturnsMediaLimitReached(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1227,7 +1303,7 @@ func TestCreate_WithImages_DuplicatesCountTowardUniqueLimit(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1257,7 +1333,7 @@ func TestUpdate_WithImages_MaxLimit_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1293,7 +1369,7 @@ func TestUpdate_WithImages_ExceedsLimit_ReturnsMediaLimitReached(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1326,7 +1402,7 @@ func TestUpdate_WithExistingImages_ExceedsLimit_PreservesExistingImages(t *testi
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1379,7 +1455,7 @@ func TestUpdate_WithExistingImages_NilImages_PreservesExistingImages(t *testing.
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1424,7 +1500,7 @@ func TestUpdate_WithExistingImages_ReplacesUpToLimit_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1473,7 +1549,7 @@ func TestMediaLimit_IndependentPerHive(t *testing.T) {
 	repo := newFakeRepo()
 	media := newFakeMediaClient()
 	subs := newFakeSubscriptionClient() // defaults to Pro
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), media, subs)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, subs)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1510,8 +1586,6 @@ func TestMediaLimit_IndependentPerHive(t *testing.T) {
 		t.Fatalf("expected both hives to have 5 photos, got %d and %d", len(h1.Images), len(h2.Images))
 	}
 }
-
-
 
 func TestDelete_Success(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
@@ -1566,7 +1640,7 @@ func TestDelete_CascadesInspectionsAndImagesBeforeHive(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, inspections, newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1608,7 +1682,7 @@ func TestDelete_SkipsMediaCallWhenNoImages(t *testing.T) {
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
 	media.failDeleteWith(errors.New("should never be called"))
-	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, inspections, newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1636,7 +1710,7 @@ func TestDelete_AbortsOnInspectionDeleteFailure_HiveSurvives(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, inspections, newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1676,7 +1750,7 @@ func TestDelete_AbortsOnMediaDeleteFailure_HiveSurvives(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, inspections, newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1712,7 +1786,7 @@ func TestDeleteByApiary_CascadesEveryHive(t *testing.T) {
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, inspections, newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	otherApiaryID := uuid.New()
@@ -1772,7 +1846,7 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 	repo := newFakeRepo()
 	inspections := newFakeInspectionDeleter()
 	media := newFakeMediaClient()
-	svc := apphive.NewService(repo, verifier, inspections, media, newFakeSubscriptionClient())
+	svc := apphive.NewService(repo, verifier, inspections, newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), media, newFakeSubscriptionClient())
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1821,7 +1895,7 @@ func TestCreate_FreeTier_FiveHivesSucceed(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1853,7 +1927,7 @@ func TestCreate_FreeTier_SixthHiveRejected(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1882,7 +1956,7 @@ func TestCreate_FreeTier_HivesCountedAcrossMultipleApiaries(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
 	userID := uuid.New()
 	apiary1 := uuid.New()
 	apiary2 := uuid.New()
@@ -1926,7 +2000,7 @@ func TestCreate_ProTier_UnlimitedHivesSucceed(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementPro}
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1955,7 +2029,7 @@ func TestCreate_SubscriptionLookupFailure_FailsClosed(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{err: errors.New("subscription-service down")}
-	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeMediaClient(), subs)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
 	userID := uuid.New()
 	apiaryID := uuid.New()
 	token := "token"
@@ -1975,5 +2049,185 @@ func TestCreate_SubscriptionLookupFailure_FailsClosed(t *testing.T) {
 	count, _ := repo.CountByUser(context.Background(), userID)
 	if count != 0 {
 		t.Fatalf("no hive should have been created on lookup failure, got count %d", count)
+	}
+}
+
+// --- needs_inspection filter and ApiaryIDsWithHives ---
+
+func TestList_NeedsInspectionFilter(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	statusProvider := newFakeInspectionStatusProvider(14)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), statusProvider, newFakeMediaClient(), newFakeSubscriptionClient())
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	recent, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Recently inspected"})
+	if err != nil {
+		t.Fatalf("create recent: %v", err)
+	}
+	stale, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Stale inspection"})
+	if err != nil {
+		t.Fatalf("create stale: %v", err)
+	}
+	never, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Never inspected"})
+	if err != nil {
+		t.Fatalf("create never: %v", err)
+	}
+
+	now := time.Now().UTC()
+	statusProvider.setLatest(token, recent.ID, now.AddDate(0, 0, -1))
+	statusProvider.setLatest(token, stale.ID, now.AddDate(0, 0, -20))
+	// never is deliberately never set.
+
+	list, total, err := svc.List(context.Background(), userID, token, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("List with needs_inspection: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (stale + never)", total)
+	}
+	gotIDs := map[uuid.UUID]bool{}
+	for _, h := range list {
+		gotIDs[h.ID] = true
+	}
+	if !gotIDs[stale.ID] || !gotIDs[never.ID] {
+		t.Errorf("expected stale and never-inspected hives, got %+v", list)
+	}
+	if gotIDs[recent.ID] {
+		t.Error("recently inspected hive should not appear in needs_inspection filter")
+	}
+}
+
+func TestList_WithoutNeedsInspectionFilterReturnsEverything(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	// If List ever called HiveInspectionStatus when needsInspection is
+	// false, this makes the test fail loudly instead of silently.
+	statusProvider := &fakeInspectionStatusProvider{err: errors.New("must not be called when needsInspection is false")}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), statusProvider, newFakeMediaClient(), newFakeSubscriptionClient())
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "H1"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	list, total, err := svc.List(context.Background(), userID, token, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, false)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 1 || len(list) != 1 {
+		t.Fatalf("total = %d, len(list) = %d, want 1/1", total, len(list))
+	}
+}
+
+func TestListByApiary_NeedsInspectionFilter(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	statusProvider := newFakeInspectionStatusProvider(14)
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), statusProvider, newFakeMediaClient(), newFakeSubscriptionClient())
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryID)
+
+	needsIt, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Needs inspection"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fine, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryID, Name: "Fine"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	statusProvider.setLatest(token, fine.ID, time.Now().UTC())
+
+	list, total, err := svc.ListByApiary(context.Background(), userID, token, apiaryID, pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("ListByApiary with needs_inspection: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(list) != 1 || list[0].ID != needsIt.ID {
+		t.Fatalf("list = %+v, want only %s", list, needsIt.ID)
+	}
+}
+
+func TestList_NeedsInspection_UpstreamErrorPropagates(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	statusProvider := &fakeInspectionStatusProvider{err: errors.New("inspection-service unreachable")}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), statusProvider, newFakeMediaClient(), newFakeSubscriptionClient())
+
+	if _, _, err := svc.List(context.Background(), uuid.New(), "token", pagination.Params{Page: 1, Limit: pagination.DefaultLimit}, nil, nil, true); err == nil {
+		t.Fatal("List with needs_inspection: got nil error, want upstream failure to propagate")
+	}
+}
+
+func TestApiaryIDsWithHives_DistinctAndScopedToUser(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), newFakeSubscriptionClient())
+
+	userID := uuid.New()
+	otherUser := uuid.New()
+	apiaryA := uuid.New()
+	apiaryB := uuid.New()
+	apiaryOther := uuid.New()
+	token := "token"
+	otherToken := "other-token"
+	verifier.allow(token, apiaryA)
+	verifier.allow(otherToken, apiaryOther)
+
+	// Two hives under apiaryA (should still yield apiaryA once), one
+	// under apiaryB, and one for a different user entirely.
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryA, Name: "H1"}); err != nil {
+		t.Fatalf("create H1: %v", err)
+	}
+	verifier.allow(token, apiaryA)
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryA, Name: "H2"}); err != nil {
+		t.Fatalf("create H2: %v", err)
+	}
+	verifier.allow(token, apiaryB)
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: apiaryB, Name: "H3"}); err != nil {
+		t.Fatalf("create H3: %v", err)
+	}
+	if _, err := svc.Create(context.Background(), otherUser, otherToken, apphive.CreateInput{ApiaryID: apiaryOther, Name: "Other"}); err != nil {
+		t.Fatalf("create other user's hive: %v", err)
+	}
+
+	ids, err := svc.ApiaryIDsWithHives(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("ApiaryIDsWithHives: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("len(ids) = %d, want 2 (apiaryA and apiaryB, each once)", len(ids))
+	}
+	got := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got[apiaryA] || !got[apiaryB] {
+		t.Errorf("ids = %v, want apiaryA and apiaryB", ids)
+	}
+	if got[apiaryOther] {
+		t.Error("another user's apiary leaked into ApiaryIDsWithHives")
+	}
+}
+
+func TestApiaryIDsWithHives_NoHivesYieldsEmpty(t *testing.T) {
+	svc := newService(newFakeRepo(), newFakeApiaryVerifier())
+
+	ids, err := svc.ApiaryIDsWithHives(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("ApiaryIDsWithHives: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("ids = %v, want empty", ids)
 	}
 }
