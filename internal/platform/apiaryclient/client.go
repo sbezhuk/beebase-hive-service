@@ -46,7 +46,7 @@ type apiaryDetailResponse struct {
 // writable response.
 type writableApiaryResponse struct {
 	Unrestricted bool       `json:"unrestricted"`
-	ApiaryID     *uuid.UUID `json:"apiary_id"`
+	ApiaryID     *uuid.UUID `json:"apiaryId"`
 }
 
 // Verify implements application/hive.ApiaryVerifier.

@@ -52,9 +52,9 @@ func NewRouter(
 			// "/{hiveID}" rather than under it, so it can never be
 			// confused with a hive id.
 			r.Get("/apiary-ids-with-hives", hiveHandler.ApiaryIDsWithHives)
-			r.Get("/{hiveID}", hiveHandler.Get)
-			r.Put("/{hiveID}", hiveHandler.Update)
-			r.Delete("/{hiveID}", hiveHandler.Delete)
+			r.Get("/{hiveId}", hiveHandler.Get)
+			r.Put("/{hiveId}", hiveHandler.Update)
+			r.Delete("/{hiveId}", hiveHandler.Delete)
 			// Internal-only: called by apiary-service when it deletes an
 			// apiary, forwarding the caller's own access token. This route
 			// group's RequireAuth can't distinguish that from a genuine

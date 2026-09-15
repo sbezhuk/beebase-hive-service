@@ -103,7 +103,7 @@ func TestClient_WritableApiaryID_Restricted(t *testing.T) {
 			t.Errorf("path = %q, want /api/v1/apiaries/writable", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiary_id": apiaryID})
+		_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiaryId": apiaryID})
 	}))
 	defer srv.Close()
 
@@ -123,7 +123,7 @@ func TestClient_WritableApiaryID_Restricted(t *testing.T) {
 func TestClient_WritableApiaryID_Unrestricted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": true, "apiary_id": nil})
+		_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": true, "apiaryId": nil})
 	}))
 	defer srv.Close()
 
@@ -143,7 +143,7 @@ func TestClient_WritableApiaryID_Unrestricted(t *testing.T) {
 func TestClient_WritableApiaryID_NoApiaries(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiary_id": nil})
+		_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiaryId": nil})
 	}))
 	defer srv.Close()
 

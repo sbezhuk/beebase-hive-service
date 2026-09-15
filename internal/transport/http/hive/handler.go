@@ -168,7 +168,7 @@ func (h *Handler) ListByApiary(w http.ResponseWriter, r *http.Request) {
 // (absent, "false", or garbage) leaves results unfiltered - there's no
 // invalid value to reject here, unlike search/sortOrder.
 func parseNeedsInspection(r *http.Request) bool {
-	return r.URL.Query().Get("needs_inspection") == "true"
+	return r.URL.Query().Get("needsInspection") == "true"
 }
 
 // ApiaryIDsWithHives handles GET /api/v1/hives/apiary-ids-with-hives.
@@ -311,7 +311,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// DeleteByApiary handles DELETE /hives?apiary_id=. It cascades every hive
+// DeleteByApiary handles DELETE /hives?apiaryId=. It cascades every hive
 // under the apiary (and, transitively, their inspections and media).
 // Called by apiary-service when it deletes an apiary, forwarding the
 // caller's own access token.
@@ -321,7 +321,7 @@ func (h *Handler) DeleteByApiary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw := r.URL.Query().Get("apiary_id")
+	raw := r.URL.Query().Get("apiaryId")
 	apiaryID, err := uuid.Parse(raw)
 	if raw == "" || err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, CodeInvalidApiaryID, "apiary_id must be a valid UUID")
@@ -364,7 +364,7 @@ func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) (uuid.UUID
 }
 
 func (h *Handler) pathHiveID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	id, err := uuid.Parse(chi.URLParam(r, "hiveID"))
+	id, err := uuid.Parse(chi.URLParam(r, "hiveId"))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, CodeInvalidHiveID, "hive id must be a valid UUID")
 		return uuid.Nil, false
