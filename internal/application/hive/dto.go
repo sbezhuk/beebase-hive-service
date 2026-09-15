@@ -1,6 +1,21 @@
 package hive
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+
+	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
+)
+
+// WithAccess wraps a hive with whether it's currently writable for the
+// caller who asked: always true on Pro; on Free, true only when its
+// parent apiary is itself writable AND the hive ranks among the first
+// FreeMaxHives hives in that apiary by (created_at, id) - see
+// Service.isWritable. Embedding *hive.Hive lets callers keep using its
+// fields directly (h.Name, h.ID, ...) without unwrapping.
+type WithAccess struct {
+	*hive.Hive
+	Writable bool
+}
 
 // CreateInput is the input to Service.Create.
 type CreateInput struct {

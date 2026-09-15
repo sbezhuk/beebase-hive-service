@@ -59,6 +59,8 @@ func (f *fakeRepo) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount i
 		return hive.ErrNameTaken
 	}
 	if maxCount > 0 {
+		// Scoped to the user account, not the target apiary - mirrors the
+		// real repository: FreeMaxHives is a per-user, account-wide quota.
 		count := 0
 		for _, existing := range f.byID {
 			if existing.UserID == h.UserID && existing.DeletedAt == nil {
@@ -72,6 +74,35 @@ func (f *fakeRepo) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount i
 	cp := *h
 	f.byID[h.ID] = &cp
 	return nil
+}
+
+// WritableIDs returns the ids of the oldest up to limit non-deleted hives
+// owned by userID across all their apiaries, ordered created_at ASC, id
+// ASC - mirroring the real repository's deterministic, account-wide
+// Free-entitlement selection.
+func (f *fakeRepo) WritableIDs(_ context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var all []*hive.Hive
+	for _, h := range f.byID {
+		if h.UserID == userID && h.DeletedAt == nil {
+			all = append(all, h)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.Before(all[j].CreatedAt)
+		}
+		return all[i].ID.String() < all[j].ID.String()
+	})
+	if limit > 0 && limit < len(all) {
+		all = all[:limit]
+	}
+	ids := make([]uuid.UUID, len(all))
+	for i, h := range all {
+		ids[i] = h.ID
+	}
+	return ids, nil
 }
 
 func (f *fakeRepo) GetByID(_ context.Context, userID, hiveID uuid.UUID) (*hive.Hive, error) {
@@ -293,12 +324,20 @@ func (f *fakeInspectionStatusProvider) HiveInspectionStatus(_ context.Context, a
 // fakeApiaryVerifier simulates apiary-service: a set of (token, apiaryID)
 // pairs are "owned", everything else is rejected exactly like a 404 from
 // the real service would be.
+// fakeApiaryVerifier is a direct test double, not a re-implementation of
+// apiary-service's selection algorithm: individual tests set exactly which
+// apiary is writable (or that the caller is unrestricted/Pro) rather than
+// this deriving it from any stored ordering. allow() defaults a newly
+// owned apiary to writable, matching the common case (a Free user with
+// only one apiary, or a Pro user); lock() flips a specific apiary to
+// read-only for tests that need a locked parent.
 type fakeApiaryVerifier struct {
-	owned map[string]map[uuid.UUID]bool
+	owned    map[string]map[uuid.UUID]bool
+	writable map[uuid.UUID]bool
 }
 
 func newFakeApiaryVerifier() *fakeApiaryVerifier {
-	return &fakeApiaryVerifier{owned: map[string]map[uuid.UUID]bool{}}
+	return &fakeApiaryVerifier{owned: map[string]map[uuid.UUID]bool{}, writable: map[uuid.UUID]bool{}}
 }
 
 func (f *fakeApiaryVerifier) allow(token string, apiaryID uuid.UUID) {
@@ -306,13 +345,48 @@ func (f *fakeApiaryVerifier) allow(token string, apiaryID uuid.UUID) {
 		f.owned[token] = map[uuid.UUID]bool{}
 	}
 	f.owned[token][apiaryID] = true
+	f.writable[apiaryID] = true
 }
 
-func (f *fakeApiaryVerifier) Verify(_ context.Context, accessToken string, apiaryID uuid.UUID) error {
+// lock marks apiaryID as currently read-only (outside the caller's Free
+// entitlement), as apiary-service would report for every apiary but the
+// one it selects.
+func (f *fakeApiaryVerifier) lock(apiaryID uuid.UUID) {
+	f.writable[apiaryID] = false
+}
+
+func (f *fakeApiaryVerifier) Verify(_ context.Context, accessToken string, apiaryID uuid.UUID) (bool, error) {
 	if apiaries, ok := f.owned[accessToken]; ok && apiaries[apiaryID] {
-		return nil
+		return f.writable[apiaryID], nil
 	}
-	return apphive.ErrApiaryNotFound
+	return false, apphive.ErrApiaryNotFound
+}
+
+// WritableApiaryID implements application/hive.ApiaryVerifier for tests
+// exercising List/ListByApiary's account-wide writability annotation: it
+// returns the first apiary owned by accessToken that's currently marked
+// writable, or nil if none is. Tests that need "unrestricted" (Pro)
+// behavior configure that directly via the fakeSubscriptionClient instead
+// of through this method - a real Free/Pro distinction never reaches this
+// fake, since Service itself never calls WritableApiaryID once its own
+// entitlement resolution already says Pro.
+func (f *fakeApiaryVerifier) WritableApiaryID(_ context.Context, accessToken string) (*uuid.UUID, bool, error) {
+	apiaries, ok := f.owned[accessToken]
+	if !ok {
+		return nil, false, nil
+	}
+	// Deterministic iteration order so tests are reproducible.
+	ids := make([]uuid.UUID, 0, len(apiaries))
+	for id := range apiaries {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	for _, id := range ids {
+		if f.writable[id] {
+			return &id, false, nil
+		}
+	}
+	return nil, false, nil
 }
 
 // --- fake inspection deleter ---
@@ -643,7 +717,7 @@ func TestGet_Success(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	got, err := svc.Get(context.Background(), userID, created.ID)
+	got, err := svc.Get(context.Background(), userID, "token", created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -655,7 +729,7 @@ func TestGet_Success(t *testing.T) {
 func TestGet_NotFound(t *testing.T) {
 	svc := newService(newFakeRepo(), newFakeApiaryVerifier())
 
-	_, err := svc.Get(context.Background(), uuid.New(), uuid.New())
+	_, err := svc.Get(context.Background(), uuid.New(), "token", uuid.New())
 	if !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get with unknown id: got %v, want ErrNotFound", err)
 	}
@@ -677,7 +751,7 @@ func TestGet_WrongOwner_ReturnsNotFound(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, err = svc.Get(context.Background(), other, created.ID)
+	_, err = svc.Get(context.Background(), other, "token", created.ID)
 	if !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get by non-owner: got %v, want ErrNotFound", err)
 	}
@@ -1038,7 +1112,7 @@ func TestUpdate_WrongOwner_ReturnsNotFound(t *testing.T) {
 		t.Fatalf("Update by non-owner: got %v, want ErrNotFound", err)
 	}
 
-	got, err := svc.Get(context.Background(), owner, created.ID)
+	got, err := svc.Get(context.Background(), owner, "token", created.ID)
 	if err != nil {
 		t.Fatalf("Get after failed hijack attempt: %v", err)
 	}
@@ -1437,7 +1511,7 @@ func TestUpdate_WithExistingImages_ExceedsLimit_PreservesExistingImages(t *testi
 		t.Fatalf("expected ErrMediaLimitReached, got %v", err)
 	}
 
-	persisted, err := svc.Get(context.Background(), userID, created.ID)
+	persisted, err := svc.Get(context.Background(), userID, "token", created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1487,7 +1561,7 @@ func TestUpdate_WithExistingImages_NilImages_PreservesExistingImages(t *testing.
 		t.Fatalf("expected 5 photos preserved, got %d", len(updated.Images))
 	}
 
-	persisted, err := svc.Get(context.Background(), userID, created.ID)
+	persisted, err := svc.Get(context.Background(), userID, "token", created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1604,7 +1678,7 @@ func TestDelete_Success(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, err := svc.Get(context.Background(), userID, created.ID); !errors.Is(err, hive.ErrNotFound) {
+	if _, err := svc.Get(context.Background(), userID, "token", created.ID); !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get after Delete: got %v, want ErrNotFound", err)
 	}
 }
@@ -1627,7 +1701,7 @@ func TestDelete_WrongOwner_ReturnsNotFoundAndDoesNotDelete(t *testing.T) {
 		t.Fatalf("Delete by non-owner: got %v, want ErrNotFound", err)
 	}
 
-	if _, err := svc.Get(context.Background(), owner, created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), owner, "token", created.ID); err != nil {
 		t.Fatalf("owner's hive should survive a failed delete attempt by another user: %v", err)
 	}
 }
@@ -1667,7 +1741,7 @@ func TestDelete_CascadesInspectionsAndImagesBeforeHive(t *testing.T) {
 	if !media.wasDeleted(photo) {
 		t.Error("Delete did not cascade to media-service for the hive's own image")
 	}
-	if _, err := svc.Get(context.Background(), userID, created.ID); !errors.Is(err, hive.ErrNotFound) {
+	if _, err := svc.Get(context.Background(), userID, "token", created.ID); !errors.Is(err, hive.ErrNotFound) {
 		t.Fatalf("Get after Delete: got %v, want ErrNotFound", err)
 	}
 }
@@ -1736,7 +1810,7 @@ func TestDelete_AbortsOnInspectionDeleteFailure_HiveSurvives(t *testing.T) {
 	if media.deleteCallCount() != 0 {
 		t.Error("media-service was called even though inspection-service failed first")
 	}
-	if _, err := svc.Get(context.Background(), userID, created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), userID, "token", created.ID); err != nil {
 		t.Fatalf("hive should survive when inspection-service fails: %v", err)
 	}
 }
@@ -1776,7 +1850,7 @@ func TestDelete_AbortsOnMediaDeleteFailure_HiveSurvives(t *testing.T) {
 	if !inspections.wasDeleted(created.ID) {
 		t.Error("inspection-service should have already been called before media-service failed")
 	}
-	if _, err := svc.Get(context.Background(), userID, created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), userID, "token", created.ID); err != nil {
 		t.Fatalf("hive should survive when media-service fails: %v", err)
 	}
 }
@@ -1819,7 +1893,7 @@ func TestDeleteByApiary_CascadesEveryHive(t *testing.T) {
 	}
 
 	for _, id := range ids {
-		if _, err := svc.Get(context.Background(), userID, id); !errors.Is(err, hive.ErrNotFound) {
+		if _, err := svc.Get(context.Background(), userID, "token", id); !errors.Is(err, hive.ErrNotFound) {
 			t.Errorf("hive %s survived DeleteByApiary: got %v, want ErrNotFound", id, err)
 		}
 		if !inspections.wasDeleted(id) {
@@ -1831,7 +1905,7 @@ func TestDeleteByApiary_CascadesEveryHive(t *testing.T) {
 			t.Errorf("image %s: cascade did not reach media-service", photo)
 		}
 	}
-	if _, err := svc.Get(context.Background(), userID, keep.ID); err != nil {
+	if _, err := svc.Get(context.Background(), userID, "token", keep.ID); err != nil {
 		t.Fatalf("hive under a different apiary should survive: %v", err)
 	}
 }
@@ -1887,7 +1961,7 @@ func TestDeleteByApiary_AbortsOnFirstFailure_EarlierHivesStayDeleted(t *testing.
 }
 
 func errorsIsNotFound(svc *apphive.Service, userID, hiveID uuid.UUID) bool {
-	_, err := svc.Get(context.Background(), userID, hiveID)
+	_, err := svc.Get(context.Background(), userID, "token", hiveID)
 	return errors.Is(err, hive.ErrNotFound)
 }
 
@@ -1952,47 +2026,137 @@ func TestCreate_FreeTier_SixthHiveRejected(t *testing.T) {
 	}
 }
 
-func TestCreate_FreeTier_HivesCountedAcrossMultipleApiaries(t *testing.T) {
+// TestCreate_FreeTier_CannotCreateUnderReadOnlyApiary proves a Free user
+// can only ever create hives into their one writable apiary: apiary-
+// service reporting a second, owned apiary as currently read-only (see
+// fakeApiaryVerifier.lock) must reject a hive create under it with
+// ErrParentReadOnly, distinct from the plain hive-count limit.
+func TestCreate_FreeTier_CannotCreateUnderReadOnlyApiary(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
 	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
 	userID := uuid.New()
-	apiary1 := uuid.New()
-	apiary2 := uuid.New()
+	writableApiary := uuid.New()
+	lockedApiary := uuid.New()
 	token := "token"
-	verifier.allow(token, apiary1)
-	verifier.allow(token, apiary2)
+	verifier.allow(token, writableApiary)
+	verifier.allow(token, lockedApiary)
+	verifier.lock(lockedApiary)
 
-	// Create 3 hives in apiary1
-	for i := 1; i <= 3; i++ {
-		_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
-			ApiaryID: apiary1,
-			Name:     fmt.Sprintf("Apiary1-Hive %d", i),
-		})
-		if err != nil {
-			t.Fatalf("create failed in apiary1: %v", err)
-		}
-	}
-
-	// Create 2 hives in apiary2 (total = 5)
-	for i := 1; i <= 2; i++ {
-		_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
-			ApiaryID: apiary2,
-			Name:     fmt.Sprintf("Apiary2-Hive %d", i),
-		})
-		if err != nil {
-			t.Fatalf("create failed in apiary2: %v", err)
-		}
-	}
-
-	// 6th hive in apiary2 must be rejected because user already has 5 hives total
 	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
-		ApiaryID: apiary2,
-		Name:     "Apiary2-Hive 3",
+		ApiaryID: lockedApiary,
+		Name:     "Squatter hive",
+	})
+	if !errors.Is(err, apphive.ErrParentReadOnly) {
+		t.Fatalf("Create under a read-only apiary: got %v, want ErrParentReadOnly", err)
+	}
+
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{ApiaryID: writableApiary, Name: "Fine"}); err != nil {
+		t.Fatalf("Create under the writable apiary should still succeed: %v", err)
+	}
+}
+
+// TestCreate_FreeTier_LimitIsAccountWideNotPerApiary proves the 5-hive
+// limit is a per-user, account-wide quota (FreeMaxHives), not scoped to
+// the target apiary: hives sitting under a different, currently
+// read-only apiary (left over from a prior Pro period, say) still count
+// against the limit for the apiary a Free user can actually create into -
+// so only the remaining slots are available there, not a fresh 5.
+func TestCreate_FreeTier_LimitIsAccountWideNotPerApiary(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	writableApiary := uuid.New()
+	lockedApiary := uuid.New()
+	token := "token"
+	verifier.allow(token, lockedApiary)
+	verifier.allow(token, writableApiary)
+
+	// 4 hives already sit under lockedApiary (e.g. created back when it
+	// was the writable one) - now apiary-service reports it read-only.
+	// They still count against the account's 5-hive quota.
+	for i := 0; i < 4; i++ {
+		mustCreate(t, repo, hive.New(userID, lockedApiary, fmt.Sprintf("Old %d", i), ""))
+	}
+	verifier.lock(lockedApiary)
+
+	// Only 1 slot remains account-wide (5 - 4 already in lockedApiary).
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: writableApiary,
+		Name:     "New 1",
+	}); err != nil {
+		t.Fatalf("1st create in the writable apiary failed: %v", err)
+	}
+
+	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: writableApiary,
+		Name:     "New 2",
 	})
 	if !errors.Is(err, apphive.ErrHiveLimitReached) {
-		t.Fatalf("expected ErrHiveLimitReached across apiaries on free tier, got: %v", err)
+		t.Fatalf("2nd create in the writable apiary (6th account-wide): got %v, want ErrHiveLimitReached", err)
+	}
+}
+
+// TestCreate_FreeTier_ConcurrentAcrossApiaries_DoesNotExceedAccountLimit
+// proves two concurrent creates into different apiaries for the same
+// user cannot together exceed the account's 5-hive quota - the
+// application-level analogue of the repository's advisory-lock
+// concurrency test, using the fake repo's own mutex-guarded map to
+// simulate the race.
+func TestCreate_FreeTier_ConcurrentAcrossApiaries_DoesNotExceedAccountLimit(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiaryA := uuid.New()
+	apiaryB := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryA)
+	verifier.allow(token, apiaryB)
+
+	const attempts = 10
+	var wg sync.WaitGroup
+	results := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		apiaryID := apiaryA
+		if i%2 == 0 {
+			apiaryID = apiaryB
+		}
+		go func(i int, apiaryID uuid.UUID) {
+			defer wg.Done()
+			_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+				ApiaryID: apiaryID,
+				Name:     fmt.Sprintf("Concurrent %d", i),
+			})
+			results <- err
+		}(i, apiaryID)
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, apphive.ErrHiveLimitReached) {
+			t.Fatalf("unexpected error from a concurrent create: %v", err)
+		}
+	}
+	if successes != apphive.FreeMaxHives {
+		t.Fatalf("successful concurrent creates across 2 apiaries = %d, want exactly %d (the account limit)", successes, apphive.FreeMaxHives)
+	}
+
+	count, err := repo.CountByUser(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("CountByUser: %v", err)
+	}
+	if count != apphive.FreeMaxHives {
+		t.Fatalf("final account hive count = %d, want %d", count, apphive.FreeMaxHives)
 	}
 }
 

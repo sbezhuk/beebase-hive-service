@@ -8,11 +8,25 @@ import (
 )
 
 // ApiaryVerifier confirms that an apiary belongs to whoever presented
-// accessToken. It's a port because apiaries live in a different service
-// (with its own database); this service never queries apiary ownership
-// itself, it only ever asks apiary-service.
+// accessToken, and resolves apiary-level Free/Pro writability. It's a port
+// because apiaries live in a different service (with its own database);
+// this service never queries apiary ownership or apiary entitlement
+// itself, it only ever asks apiary-service - the sole source of truth for
+// both, since apiary ordering/ownership data lives only there.
 type ApiaryVerifier interface {
-	Verify(ctx context.Context, accessToken string, apiaryID uuid.UUID) error
+	// Verify confirms apiaryID belongs to whoever presented accessToken,
+	// and reports whether apiary-service currently considers it writable
+	// (always true under Pro; under Free, true only for the one apiary
+	// within the caller's entitlement). Returns ErrApiaryNotFound if it
+	// doesn't belong to them (or doesn't exist).
+	Verify(ctx context.Context, accessToken string, apiaryID uuid.UUID) (writable bool, err error)
+	// WritableApiaryID returns the id of the one apiary within the
+	// caller's Free entitlement (nil if they own none), or reports
+	// unrestricted=true when they currently have Pro - meaning every
+	// apiary they own is writable and ApiaryID is meaningless. Used to
+	// annotate hive list/get responses in bulk, without a per-row or
+	// per-apiary-id round trip to apiary-service.
+	WritableApiaryID(ctx context.Context, accessToken string) (apiaryID *uuid.UUID, unrestricted bool, err error)
 }
 
 // InspectionDeleter deletes every inspection belonging to a hive, in

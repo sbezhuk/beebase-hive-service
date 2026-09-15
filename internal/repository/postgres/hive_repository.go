@@ -85,8 +85,15 @@ func (r *HiveRepository) CountByUser(ctx context.Context, userID uuid.UUID) (int
 }
 
 // CreateWithLimit creates a new hive, but only if the user currently owns
-// fewer than maxCount active hives across all apiaries. If maxCount <= 0, creation is unlimited.
-// Uses a transaction-scoped advisory lock on the user ID to prevent race conditions.
+// fewer than maxCount active hives across all apiaries. If maxCount <= 0,
+// creation is unlimited. The count (and the advisory lock guarding it) is
+// scoped to h.UserID, not h.ApiaryID: the product's "5 writable hives"
+// entitlement is a per-user, account-wide quota (see application/hive.
+// FreeMaxHives), so two concurrent creates into different apiaries for the
+// same user must still be serialized against the same shared limit.
+// Parent-apiary writability is a separate gate enforced by the
+// application layer before this is ever called (see application/hive.
+// Service.Create).
 func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount int) error {
 	if maxCount <= 0 {
 		return r.Create(ctx, h)
@@ -146,6 +153,42 @@ func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxC
 	}
 
 	return r.Create(ctx, h)
+}
+
+// WritableIDs returns the ids of the oldest up to limit non-deleted hives
+// owned by userID across all their apiaries, ordered created_at ASC, id
+// ASC. A limit <= 0 returns every hive id userID owns.
+func (r *HiveRepository) WritableIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	q := `
+		SELECT id FROM hives
+		WHERE user_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at ASC, id ASC
+	`
+	args := []any{userID}
+	if limit > 0 {
+		q += " LIMIT $2"
+		args = append(args, limit)
+	}
+
+	rows, err := r.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: writable hive ids: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("postgres: scan writable hive id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: writable hive ids: %w", err)
+	}
+
+	return ids, nil
 }
 
 func (r *HiveRepository) GetByID(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive, error) {

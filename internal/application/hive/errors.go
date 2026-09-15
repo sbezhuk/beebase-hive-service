@@ -24,3 +24,16 @@ var ErrHiveLimitReached = errors.New("hive limit reached")
 // ErrMediaLimitReached is returned when an attempt is made to attach more
 // photos than permitted by the media attachment limit.
 var ErrMediaLimitReached = errors.New("media limit reached")
+
+// ErrReadOnly is returned when a free-tier user attempts to modify a hive
+// that itself currently falls outside their Free entitlement (see
+// FreeMaxHives and Service.isWritable) - i.e. a write attempted against a
+// Pro-locked hive whose parent apiary is otherwise writable.
+var ErrReadOnly = errors.New("hive is read-only under the free plan")
+
+// ErrParentReadOnly is returned when a free-tier user attempts to modify a
+// hive (or create one) under an apiary that itself currently falls outside
+// their Free entitlement - distinct from ErrReadOnly so callers (and the
+// API error contract) can tell "this hive itself needs Pro" apart from
+// "its parent apiary needs Pro".
+var ErrParentReadOnly = errors.New("parent apiary is read-only under the free plan")

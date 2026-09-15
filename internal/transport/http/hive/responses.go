@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sbezhuk/beebase-common/medialink"
-	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
+	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 )
 
 // ImageResponse is the public representation of one image attached to a
@@ -20,19 +20,28 @@ type ImageResponse struct {
 
 // Response is the public representation of a hive.
 type Response struct {
-	ID        uuid.UUID       `json:"id"`
-	ApiaryID  uuid.UUID       `json:"apiary_id"`
-	Name      string          `json:"name"`
-	Notes     string          `json:"notes"`
-	Images    []ImageResponse `json:"images"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID       uuid.UUID       `json:"id"`
+	ApiaryID uuid.UUID       `json:"apiary_id"`
+	Name     string          `json:"name"`
+	Notes    string          `json:"notes"`
+	Images   []ImageResponse `json:"images"`
+	// Writable reports whether the caller can currently edit this hive,
+	// create inspections/harvests under it, or otherwise mutate it or its
+	// descendants. Always true under Pro; under Free, true only when its
+	// parent apiary is itself writable and it ranks among the caller's
+	// first FreeMaxHives hives in that apiary (see application/hive.
+	// Service.isWritable). Lets Flutter (and inspection-service/
+	// harvest-service) render/enforce locked-resource behavior without
+	// reimplementing this selection themselves.
+	Writable  bool      `json:"writable"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // newResponse builds a Response for h. Images is read straight from h -
 // never nil (Hive.Images is always a real, possibly-empty slice) - so it
 // renders as "images": [] rather than null when there are no photos.
-func newResponse(h *hive.Hive, publicBaseURL string) Response {
+func newResponse(h *apphive.WithAccess, publicBaseURL string) Response {
 	images := make([]ImageResponse, len(h.Images))
 	for i, id := range h.Images {
 		images[i] = ImageResponse{ID: id, ImageURL: medialink.DownloadURL(publicBaseURL, id)}
@@ -43,12 +52,13 @@ func newResponse(h *hive.Hive, publicBaseURL string) Response {
 		Name:      h.Name,
 		Notes:     h.Notes,
 		Images:    images,
+		Writable:  h.Writable,
 		CreatedAt: h.CreatedAt,
 		UpdatedAt: h.UpdatedAt,
 	}
 }
 
-func newListResponse(hives []*hive.Hive, publicBaseURL string) []Response {
+func newListResponse(hives []*apphive.WithAccess, publicBaseURL string) []Response {
 	out := make([]Response, len(hives))
 	for i, h := range hives {
 		out[i] = newResponse(h, publicBaseURL)
