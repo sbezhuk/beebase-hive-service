@@ -16,6 +16,7 @@ import (
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/inspectionclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/mediaclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/notificationclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/postgres"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/subscriptionclient"
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
@@ -86,9 +87,9 @@ func run() error {
 	mediaDeleter := mediaclient.New(cfg.MediaServiceURL)
 	subscriptionClient := subscriptionclient.New(cfg.SubscriptionServiceURL)
 	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient)
-	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL)
+	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notificationclient.New(cfg.NotificationServiceURL, cfg.InternalServiceToken))
 
-	router := transporthttp.NewRouter(log, db, hiveHandler, verifier)
+	router := transporthttp.NewRouter(log, db, hiveHandler, verifier, cfg.InternalServiceToken)
 
 	srv := server.New(server.Config{
 		Addr:         ":" + cfg.HTTPPort,

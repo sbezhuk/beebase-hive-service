@@ -33,7 +33,8 @@ type Config struct {
 	// AuthJWKSURL points at auth-service's public key endpoint
 	// (GET /.well-known/jwks.json), used to verify access tokens without
 	// ever holding a key that could mint one.
-	AuthJWKSURL string
+	AuthJWKSURL          string
+	InternalServiceToken string
 
 	// PublicBaseURL is the gateway's externally reachable base URL, used
 	// to build the image_url for each entry in a response's `images`.
@@ -57,6 +58,7 @@ type Config struct {
 	// SubscriptionServiceURL is subscription-service's base URL, used to
 	// query the caller's entitlement level (free vs pro) on hive creation.
 	SubscriptionServiceURL string
+	NotificationServiceURL string
 }
 
 // Load builds a Config from environment variables, falling back to
@@ -79,13 +81,14 @@ func Load() (*Config, error) {
 
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 
-		AuthJWKSURL:      getEnv("AUTH_JWKS_URL", ""),
+		AuthJWKSURL: getEnv("AUTH_JWKS_URL", ""), InternalServiceToken: getEnv("INTERNAL_SERVICE_TOKEN", ""),
 		PublicBaseURL:    getEnv("PUBLIC_BASE_URL", ""),
 		ApiaryServiceURL: getEnv("APIARY_SERVICE_URL", ""),
 
 		InspectionServiceURL:   getEnv("INSPECTION_SERVICE_URL", ""),
 		MediaServiceURL:        getEnv("MEDIA_SERVICE_URL", ""),
 		SubscriptionServiceURL: getEnv("SUBSCRIPTION_SERVICE_URL", ""),
+		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", ""),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -96,6 +99,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.AuthJWKSURL == "" {
 		return nil, fmt.Errorf("config: AUTH_JWKS_URL is required")
+	}
+	if cfg.InternalServiceToken == "" {
+		return nil, fmt.Errorf("config: INTERNAL_SERVICE_TOKEN is required")
 	}
 	if cfg.PublicBaseURL == "" {
 		return nil, fmt.Errorf("config: PUBLIC_BASE_URL is required")
