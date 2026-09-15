@@ -87,9 +87,9 @@ func run() error {
 	mediaDeleter := mediaclient.New(cfg.MediaServiceURL)
 	subscriptionClient := subscriptionclient.New(cfg.SubscriptionServiceURL)
 	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient)
-	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notificationclient.New(cfg.NotificationServiceURL))
+	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notificationclient.New(cfg.NotificationServiceURL, cfg.InternalServiceToken))
 
-	router := transporthttp.NewRouter(log, db, hiveHandler, verifier)
+	router := transporthttp.NewRouter(log, db, hiveHandler, verifier, cfg.InternalServiceToken)
 
 	srv := server.New(server.Config{
 		Addr:         ":" + cfg.HTTPPort,

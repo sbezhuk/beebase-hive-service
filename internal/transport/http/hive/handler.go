@@ -50,7 +50,7 @@ type Handler struct {
 	log           *slog.Logger
 	publicBaseURL string
 	reminders     interface {
-		Cleanup(context.Context, string, string, uuid.UUID) error
+		Cleanup(context.Context, string, uuid.UUID) error
 	}
 }
 
@@ -58,7 +58,7 @@ type Handler struct {
 // gateway's externally reachable base URL, used to build each image's
 // image_url.
 func NewHandler(service *apphive.Service, log *slog.Logger, publicBaseURL string, reminders ...interface {
-	Cleanup(context.Context, string, string, uuid.UUID) error
+	Cleanup(context.Context, string, uuid.UUID) error
 }) *Handler {
 	h := &Handler{service: service, log: log, publicBaseURL: publicBaseURL}
 	if len(reminders) > 0 {
@@ -297,7 +297,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 	if h.reminders != nil {
-		if err := h.reminders.Cleanup(r.Context(), token, "hive", hiveID); err != nil {
+		if err := h.reminders.Cleanup(r.Context(), "hive", hiveID); err != nil {
 			h.log.Warn("reminder cleanup failed", "entity_type", "hive", "entity_id", hiveID, "error", err)
 		}
 	}
