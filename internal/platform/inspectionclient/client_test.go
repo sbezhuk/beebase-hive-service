@@ -72,9 +72,9 @@ func TestClient_HiveInspectionStatus_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"threshold_days": 14,
+			"thresholdDays": 14,
 			"hives": []map[string]any{
-				{"hive_id": hiveID.String(), "latest_inspected_at": latest.Format(time.RFC3339)},
+				{"hiveId": hiveID.String(), "latestInspectedAt": latest.Format(time.RFC3339)},
 			},
 		})
 	}))
@@ -97,7 +97,7 @@ func TestClient_HiveInspectionStatus_Success(t *testing.T) {
 func TestClient_HiveInspectionStatus_EmptyHivesYieldsEmptyMap(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"threshold_days": 14, "hives": []any{}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"thresholdDays": 14, "hives": []any{}})
 	}))
 	defer srv.Close()
 

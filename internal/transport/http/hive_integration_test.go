@@ -115,7 +115,7 @@ func (f *fakeApiaryService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveWritable answers GET /api/v1/apiaries/writable: the first
 // non-locked apiary owned by the caller, or {"unrestricted":false,
-// "apiary_id":null} if none. Deterministic iteration order (sorted by
+// "apiaryId":null} if none. Deterministic iteration order (sorted by
 // string form) keeps tests reproducible.
 func (f *fakeApiaryService) serveWritable(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -137,7 +137,7 @@ func (f *fakeApiaryService) serveWritable(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiary_id": apiaryID})
+	_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiaryId": apiaryID})
 }
 
 // fakeCascadeTarget stands in for inspection-service's delete endpoint
@@ -210,7 +210,7 @@ func (f *fakeCascadeTarget) serveHiveStatus(w http.ResponseWriter) {
 	defer f.mu.Unlock()
 
 	type item struct {
-		HiveID            uuid.UUID `json:"hive_id"`
+		HiveID            uuid.UUID `json:"hiveId"`
 		LatestInspectedAt time.Time `json:"latest_inspected_at"`
 	}
 	hives := make([]item, 0, len(f.hiveStatus))
@@ -465,7 +465,7 @@ func TestHiveFlow_CreateGetListUpdateDelete(t *testing.T) {
 
 	// Create
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Hive 1",
 		"notes":     "strong colony",
 	})
@@ -538,7 +538,7 @@ func TestHiveFlow_CreateRejectedWhenApiaryNotOwned(t *testing.T) {
 	// Deliberately not calling stack.apiary.allow for this token/apiary pair.
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": someoneElsesApiary.String(),
+		"apiaryId": someoneElsesApiary.String(),
 		"name":      "Squatter hive",
 	})
 	if resp.StatusCode != http.StatusNotFound {
@@ -565,7 +565,7 @@ func TestHiveFlow_CannotAccessAnotherUsersHive(t *testing.T) {
 	stack.apiary.allow(ownerToken, apiaryID)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", ownerToken, map[string]string{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Owner's hive",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -623,7 +623,7 @@ func TestHiveFlow_NameUniqueness(t *testing.T) {
 	stack.apiary.allow(token, apiary2)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": apiary1.String(),
+		"apiaryId": apiary1.String(),
 		"name":      "Hive 1",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -633,7 +633,7 @@ func TestHiveFlow_NameUniqueness(t *testing.T) {
 	decodeJSON(t, resp, &first)
 
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": apiary1.String(),
+		"apiaryId": apiary1.String(),
 		"name":      "Hive 1",
 	})
 	if resp.StatusCode != http.StatusConflict {
@@ -650,7 +650,7 @@ func TestHiveFlow_NameUniqueness(t *testing.T) {
 	}
 
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": apiary2.String(),
+		"apiaryId": apiary2.String(),
 		"name":      "Hive 1",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -680,7 +680,7 @@ func TestHiveFlow_ValidationErrors(t *testing.T) {
 	token := stack.tokenFor(t, uuid.New())
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": uuid.New().String(),
+		"apiaryId": uuid.New().String(),
 		"name":      "",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -688,7 +688,7 @@ func TestHiveFlow_ValidationErrors(t *testing.T) {
 	}
 
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": "not-a-uuid",
+		"apiaryId": "not-a-uuid",
 		"name":      "ok",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -710,7 +710,7 @@ func TestHiveFlow_ListPagination(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      fmt.Sprintf("H-%d", i),
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -766,7 +766,7 @@ func TestHiveFlow_ListByApiary_ValidAndExcludedOtherApiaries(t *testing.T) {
 	// Create 2 hives in apiary1
 	for _, name := range []string{"A1-Hive1", "A1-Hive2"} {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiary1.String(),
+			"apiaryId": apiary1.String(),
 			"name":      name,
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -775,7 +775,7 @@ func TestHiveFlow_ListByApiary_ValidAndExcludedOtherApiaries(t *testing.T) {
 	}
 	// Create 1 hive in apiary2
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": apiary2.String(),
+		"apiaryId": apiary2.String(),
 		"name":      "A2-Hive1",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -822,7 +822,7 @@ func TestHiveFlow_ListByApiary_Pagination(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      fmt.Sprintf("H-%d", i),
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -873,7 +873,7 @@ func TestHiveFlow_ListByApiary_Search(t *testing.T) {
 	}
 	for _, item := range items {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      item["name"],
 			"notes":     item["notes"],
 		})
@@ -972,7 +972,7 @@ func TestHiveFlow_DeleteCascadesInspectionsAndMedia(t *testing.T) {
 	stack.media.own(photo)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Gone soon",
 		"images":    []string{photo.String()},
 	})
@@ -1019,7 +1019,7 @@ func TestHiveFlow_DeleteByApiary(t *testing.T) {
 		photo := uuid.New()
 		stack.media.own(photo)
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      name,
 			"images":    []string{photo.String()},
 		})
@@ -1035,7 +1035,7 @@ func TestHiveFlow_DeleteByApiary(t *testing.T) {
 	otherToken := stack.tokenFor(t, userID)
 	stack.apiary.allow(otherToken, otherApiaryID)
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", otherToken, map[string]string{
-		"apiary_id": otherApiaryID.String(),
+		"apiaryId": otherApiaryID.String(),
 		"name":      "Keep",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -1044,7 +1044,7 @@ func TestHiveFlow_DeleteByApiary(t *testing.T) {
 	var keep hivehttp.Response
 	decodeJSON(t, resp, &keep)
 
-	resp = stack.request(t, http.MethodDelete, "/api/v1/hives?apiary_id="+apiaryID.String(), token, nil)
+	resp = stack.request(t, http.MethodDelete, "/api/v1/hives?apiaryId="+apiaryID.String(), token, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DeleteByApiary: status = %d, want %d", resp.StatusCode, http.StatusNoContent)
 	}
@@ -1085,7 +1085,7 @@ func TestHiveFlow_UpdateReplacesImages(t *testing.T) {
 	stack.media.own(keep, drop)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Hive 1",
 		"images":    []string{keep.String(), drop.String()},
 	})
@@ -1159,7 +1159,7 @@ func TestHiveFlow_CreateWithImages_RejectsForeignMedia(t *testing.T) {
 	stack.apiary.allow(token, apiaryID)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Hive 1",
 		"images":    []string{uuid.New().String()},
 	})
@@ -1198,7 +1198,7 @@ func TestHiveFlow_FreeTierLimit(t *testing.T) {
 	// Fill apiary 1 up to the limit.
 	for i := 1; i <= 5; i++ {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-			"apiary_id": apiaryID1.String(),
+			"apiaryId": apiaryID1.String(),
 			"name":      fmt.Sprintf("Hive A%d", i),
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -1208,7 +1208,7 @@ func TestHiveFlow_FreeTierLimit(t *testing.T) {
 
 	// A 6th hive in the same (now full) apiary is rejected.
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID1.String(),
+		"apiaryId": apiaryID1.String(),
 		"name":      "Hive A6",
 	})
 	if resp.StatusCode != http.StatusForbidden {
@@ -1229,7 +1229,7 @@ func TestHiveFlow_FreeTierLimit(t *testing.T) {
 	// the limit is account-wide, not per-apiary: the account already
 	// holds 5 hives regardless of which apiary they're in.
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID2.String(),
+		"apiaryId": apiaryID2.String(),
 		"name":      "Hive B1",
 	})
 	if resp.StatusCode != http.StatusForbidden {
@@ -1256,7 +1256,7 @@ func TestHiveFlow_FreeTierLimit_ParentApiaryReadOnly(t *testing.T) {
 	stack.apiary.lock(lockedApiary)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": lockedApiary.String(),
+		"apiaryId": lockedApiary.String(),
 		"name":      "Squatter",
 	})
 	if resp.StatusCode != http.StatusForbidden {
@@ -1284,7 +1284,7 @@ func TestHiveFlow_SubscriptionServiceUnreachable(t *testing.T) {
 	stack.apiary.allow(token, apiaryID)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Should fail closed",
 	})
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -1308,7 +1308,7 @@ func TestHiveFlow_MediaLimit(t *testing.T) {
 
 	// 1. Creating with 5 photos succeeds
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Hive 5 photos",
 		"images":    photos,
 	})
@@ -1328,7 +1328,7 @@ func TestHiveFlow_MediaLimit(t *testing.T) {
 	tooMany := append(photos, photo6.String())
 
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "Hive 6 photos",
 		"images":    tooMany,
 	})
@@ -1410,7 +1410,7 @@ func TestHiveFlow_NeedsInspectionFilter(t *testing.T) {
 
 	create := func(name string) hivehttp.Response {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      name,
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -1429,7 +1429,7 @@ func TestHiveFlow_NeedsInspectionFilter(t *testing.T) {
 	stack.inspections.setLatest(recent.ID, now.AddDate(0, 0, -1))
 	stack.inspections.setLatest(stale.ID, now.AddDate(0, 0, -20))
 
-	resp := stack.request(t, http.MethodGet, "/api/v1/hives?needs_inspection=true", token, nil)
+	resp := stack.request(t, http.MethodGet, "/api/v1/hives?needsInspection=true", token, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list needs_inspection: status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
@@ -1453,14 +1453,14 @@ func TestHiveFlow_NeedsInspectionFilter_FalseOrAbsentReturnsEverything(t *testin
 	stack.apiary.allow(token, apiaryID)
 
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-		"apiary_id": apiaryID.String(),
+		"apiaryId": apiaryID.String(),
 		"name":      "H1",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status = %d, want %d", resp.StatusCode, http.StatusCreated)
 	}
 
-	for _, path := range []string{"/api/v1/hives", "/api/v1/hives?needs_inspection=false", "/api/v1/hives?needs_inspection=garbage"} {
+	for _, path := range []string{"/api/v1/hives", "/api/v1/hives?needsInspection=false", "/api/v1/hives?needsInspection=garbage"} {
 		resp := stack.request(t, http.MethodGet, path, token, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s: status = %d, want %d", path, resp.StatusCode, http.StatusOK)
@@ -1488,7 +1488,7 @@ func TestHiveFlow_ListByApiary_NeedsInspectionFilter(t *testing.T) {
 
 	create := func(apiaryID uuid.UUID, name string) hivehttp.Response {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      name,
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -1508,7 +1508,7 @@ func TestHiveFlow_ListByApiary_NeedsInspectionFilter(t *testing.T) {
 	stack.inspections.setLatest(recentInA.ID, now.AddDate(0, 0, -1))
 	stack.inspections.setLatest(staleInB.ID, now.AddDate(0, 0, -20))
 
-	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryA.String()+"/hives?needs_inspection=true", token, nil)
+	resp := stack.request(t, http.MethodGet, "/api/v1/apiaries/"+apiaryA.String()+"/hives?needsInspection=true", token, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list: status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
@@ -1535,7 +1535,7 @@ func TestHiveFlow_ApiaryIDsWithHives(t *testing.T) {
 
 	for _, apiaryID := range []uuid.UUID{apiaryA, apiaryA, apiaryB} {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]string{
-			"apiary_id": apiaryID.String(),
+			"apiaryId": apiaryID.String(),
 			"name":      "H-" + uuid.New().String(),
 		})
 		if resp.StatusCode != http.StatusCreated {
@@ -1548,7 +1548,7 @@ func TestHiveFlow_ApiaryIDsWithHives(t *testing.T) {
 		t.Fatalf("apiary-ids-with-hives: status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 	var body struct {
-		ApiaryIDs []uuid.UUID `json:"apiary_ids"`
+		ApiaryIDs []uuid.UUID `json:"apiaryIds"`
 	}
 	decodeJSON(t, resp, &body)
 

@@ -54,7 +54,7 @@ func decodeAndValidate(w http.ResponseWriter, r *http.Request, dst validatable) 
 
 // CreateRequest is the body of POST /hives.
 type CreateRequest struct {
-	ApiaryID string `json:"apiary_id"`
+	ApiaryID string `json:"apiaryId"`
 	Name     string `json:"name"`
 	Notes    string `json:"notes"`
 	// Images is the set of already-uploaded media ids to attach
@@ -69,10 +69,10 @@ func (r *CreateRequest) Validate() map[string]string {
 
 	switch {
 	case strings.TrimSpace(r.ApiaryID) == "":
-		fields["apiary_id"] = CodeApiaryIDRequired
+		fields["apiaryId"] = CodeApiaryIDRequired
 	default:
 		if _, err := uuid.Parse(r.ApiaryID); err != nil {
-			fields["apiary_id"] = CodeApiaryIDInvalid
+			fields["apiaryId"] = CodeApiaryIDInvalid
 		}
 	}
 

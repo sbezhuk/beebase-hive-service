@@ -62,12 +62,12 @@ func (c *Client) DeleteByHive(ctx context.Context, accessToken string, hiveID uu
 }
 
 type hiveInspectionStatusItem struct {
-	HiveID            uuid.UUID `json:"hive_id"`
-	LatestInspectedAt time.Time `json:"latest_inspected_at"`
+	HiveID            uuid.UUID `json:"hiveId"`
+	LatestInspectedAt time.Time `json:"latestInspectedAt"`
 }
 
 type hiveInspectionStatusResponse struct {
-	ThresholdDays int                        `json:"threshold_days"`
+	ThresholdDays int                        `json:"thresholdDays"`
 	Hives         []hiveInspectionStatusItem `json:"hives"`
 }
 

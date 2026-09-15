@@ -113,7 +113,7 @@ paths:
         "403":
           description: >
             Either the Free plan creation limit was reached (code
-            hive_limit_reached: the account already owns 5 hives - a
+            hiveLimitReached: the account already owns 5 hives - a
             per-user, account-wide quota, independent of how many apiaries
             they're spread across), or apiary_id itself is not currently
             writable under Free (code parent_resource_pro_locked). Pro has
@@ -165,7 +165,7 @@ paths:
             direction as a stable secondary sort.
           required: false
           schema: { type: string, enum: [asc, desc] }
-        - name: needs_inspection
+        - name: needsInspection
           in: query
           description: >
             When exactly "true", restricts results to hives that
@@ -365,7 +365,7 @@ paths:
             direction as a stable secondary sort.
           required: false
           schema: { type: string, enum: [asc, desc] }
-        - name: needs_inspection
+        - name: needsInspection
           in: query
           description: >
             When exactly "true", restricts results to hives in this
@@ -421,9 +421,9 @@ components:
 
     CreateHiveRequest:
       type: object
-      required: [apiary_id, name]
+      required: [apiaryId, name]
       properties:
-        apiary_id: { type: string, format: uuid, description: Must be an apiary owned by the caller. }
+        apiaryId: { type: string, format: uuid, description: Must be an apiary owned by the caller. }
         name: { type: string, maxLength: 200 }
         notes: { type: string, maxLength: 2000 }
         images:
@@ -458,7 +458,7 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        image_url:
+        imageUrl:
           type: string
           format: uri
           description: >
@@ -474,7 +474,7 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        apiary_id: { type: string, format: uuid }
+        apiaryId: { type: string, format: uuid }
         name: { type: string }
         notes: { type: string }
         images:
@@ -504,20 +504,20 @@ components:
             it's promoted (e.g. a currently-writable sibling is deleted)
             or the caller upgrades to Pro. Deleting a hive is never
             affected by this flag.
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
 
     Pagination:
       type: object
       description: Metadata describing the requested page relative to the full result set.
-      required: [page, limit, total, total_pages, has_next, has_previous]
+      required: [page, limit, total, totalPages, hasNext, hasPrevious]
       properties:
         page: { type: integer, example: 1 }
         limit: { type: integer, example: 20 }
         total: { type: integer, description: Total matching rows across all pages., example: 125 }
-        total_pages: { type: integer, example: 7 }
-        has_next: { type: boolean }
-        has_previous: { type: boolean }
+        totalPages: { type: integer, example: 7 }
+        hasNext: { type: boolean }
+        hasPrevious: { type: boolean }
 
     ErrorResponse:
       type: object

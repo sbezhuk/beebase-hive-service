@@ -15,13 +15,13 @@ import (
 // download route, built fresh on every response.
 type ImageResponse struct {
 	ID       uuid.UUID `json:"id"`
-	ImageURL string    `json:"image_url"`
+	ImageURL string    `json:"imageUrl"`
 }
 
 // Response is the public representation of a hive.
 type Response struct {
 	ID       uuid.UUID       `json:"id"`
-	ApiaryID uuid.UUID       `json:"apiary_id"`
+	ApiaryID uuid.UUID       `json:"apiaryId"`
 	Name     string          `json:"name"`
 	Notes    string          `json:"notes"`
 	Images   []ImageResponse `json:"images"`
@@ -34,8 +34,8 @@ type Response struct {
 	// harvest-service) render/enforce locked-resource behavior without
 	// reimplementing this selection themselves.
 	Writable  bool      `json:"writable"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // newResponse builds a Response for h. Images is read straight from h -
@@ -70,7 +70,7 @@ func newListResponse(hives []*apphive.WithAccess, publicBaseURL string) []Respon
 // /api/v1/hives/apiary-ids-with-hives: every apiary id the caller owns
 // at least one non-deleted hive under.
 type ApiaryIDsWithHivesResponse struct {
-	ApiaryIDs []uuid.UUID `json:"apiary_ids"`
+	ApiaryIDs []uuid.UUID `json:"apiaryIds"`
 }
 
 // newApiaryIDsWithHivesResponse builds an ApiaryIDsWithHivesResponse.

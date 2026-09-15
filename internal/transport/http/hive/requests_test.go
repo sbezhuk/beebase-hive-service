@@ -25,12 +25,12 @@ func TestCreateRequest_Validate(t *testing.T) {
 		{
 			name: "missing apiary_id",
 			req:  CreateRequest{ApiaryID: "", Name: "Hive 1"},
-			want: map[string]string{"apiary_id": CodeApiaryIDRequired},
+			want: map[string]string{"apiaryId": CodeApiaryIDRequired},
 		},
 		{
 			name: "malformed apiary_id",
 			req:  CreateRequest{ApiaryID: "not-a-uuid", Name: "Hive 1"},
-			want: map[string]string{"apiary_id": CodeApiaryIDInvalid},
+			want: map[string]string{"apiaryId": CodeApiaryIDInvalid},
 		},
 		{
 			name: "empty name",
@@ -50,7 +50,7 @@ func TestCreateRequest_Validate(t *testing.T) {
 		{
 			name: "everything wrong at once",
 			req:  CreateRequest{ApiaryID: "bad", Name: ""},
-			want: map[string]string{"apiary_id": CodeApiaryIDInvalid, "name": CodeNameRequired},
+			want: map[string]string{"apiaryId": CodeApiaryIDInvalid, "name": CodeNameRequired},
 		},
 	}
 
