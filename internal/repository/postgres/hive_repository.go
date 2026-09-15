@@ -84,14 +84,16 @@ func (r *HiveRepository) CountByUser(ctx context.Context, userID uuid.UUID) (int
 	return count, nil
 }
 
-// CreateWithLimit creates a new hive, but only if its target apiary
-// currently holds fewer than maxCount active hives. If maxCount <= 0,
+// CreateWithLimit creates a new hive, but only if the user currently owns
+// fewer than maxCount active hives across all apiaries. If maxCount <= 0,
 // creation is unlimited. The count (and the advisory lock guarding it) is
-// scoped to h.ApiaryID, not h.UserID: the product's "5 writable hives"
-// entitlement can only ever be consumed by hives under the one apiary a
-// Free user may currently create into (see application/hive.Service.
-// Create), so hives sitting under a different, currently-read-only apiary
-// must never count against this limit or be able to race against it.
+// scoped to h.UserID, not h.ApiaryID: the product's "5 writable hives"
+// entitlement is a per-user, account-wide quota (see application/hive.
+// FreeMaxHives), so two concurrent creates into different apiaries for the
+// same user must still be serialized against the same shared limit.
+// Parent-apiary writability is a separate gate enforced by the
+// application layer before this is ever called (see application/hive.
+// Service.Create).
 func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount int) error {
 	if maxCount <= 0 {
 		return r.Create(ctx, h)
@@ -105,14 +107,14 @@ func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxC
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		const lockQ = `SELECT pg_advisory_xact_lock(hashtext('hive_limit:apiary:' || $1::text))`
-		if _, err := tx.Exec(ctx, lockQ, h.ApiaryID); err != nil {
+		const lockQ = `SELECT pg_advisory_xact_lock(hashtext('hive_limit:' || $1::text))`
+		if _, err := tx.Exec(ctx, lockQ, h.UserID); err != nil {
 			return fmt.Errorf("postgres: acquire advisory lock: %w", err)
 		}
 
-		const countQ = `SELECT count(*) FROM hives WHERE apiary_id = $1 AND deleted_at IS NULL`
+		const countQ = `SELECT count(*) FROM hives WHERE user_id = $1 AND deleted_at IS NULL`
 		var count int
-		if err := tx.QueryRow(ctx, countQ, h.ApiaryID).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx, countQ, h.UserID).Scan(&count); err != nil {
 			return fmt.Errorf("postgres: count hives: %w", err)
 		}
 		if count >= maxCount {
@@ -136,14 +138,14 @@ func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxC
 		return nil
 	}
 
-	const lockQ = `SELECT pg_advisory_xact_lock(hashtext('hive_limit:apiary:' || $1::text))`
-	if _, err := r.db.Exec(ctx, lockQ, h.ApiaryID); err != nil {
+	const lockQ = `SELECT pg_advisory_xact_lock(hashtext('hive_limit:' || $1::text))`
+	if _, err := r.db.Exec(ctx, lockQ, h.UserID); err != nil {
 		return fmt.Errorf("postgres: acquire advisory lock: %w", err)
 	}
 
-	const countQ = `SELECT count(*) FROM hives WHERE apiary_id = $1 AND deleted_at IS NULL`
+	const countQ = `SELECT count(*) FROM hives WHERE user_id = $1 AND deleted_at IS NULL`
 	var count int
-	if err := r.db.QueryRow(ctx, countQ, h.ApiaryID).Scan(&count); err != nil {
+	if err := r.db.QueryRow(ctx, countQ, h.UserID).Scan(&count); err != nil {
 		return fmt.Errorf("postgres: count hives: %w", err)
 	}
 	if count >= maxCount {
@@ -153,30 +155,16 @@ func (r *HiveRepository) CreateWithLimit(ctx context.Context, h *hive.Hive, maxC
 	return r.Create(ctx, h)
 }
 
-// CountByApiary returns the total number of non-deleted hives under apiaryID.
-func (r *HiveRepository) CountByApiary(ctx context.Context, apiaryID uuid.UUID) (int, error) {
-	const q = `
-		SELECT count(*)
-		FROM hives
-		WHERE apiary_id = $1 AND deleted_at IS NULL
-	`
-	var count int
-	if err := r.db.QueryRow(ctx, q, apiaryID).Scan(&count); err != nil {
-		return 0, fmt.Errorf("postgres: count hives by apiary: %w", err)
-	}
-	return count, nil
-}
-
 // WritableIDs returns the ids of the oldest up to limit non-deleted hives
-// under apiaryID, ordered created_at ASC, id ASC. A limit <= 0 returns
-// every hive id under apiaryID.
-func (r *HiveRepository) WritableIDs(ctx context.Context, apiaryID uuid.UUID, limit int) ([]uuid.UUID, error) {
+// owned by userID across all their apiaries, ordered created_at ASC, id
+// ASC. A limit <= 0 returns every hive id userID owns.
+func (r *HiveRepository) WritableIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
 	q := `
 		SELECT id FROM hives
-		WHERE apiary_id = $1 AND deleted_at IS NULL
+		WHERE user_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at ASC, id ASC
 	`
-	args := []any{apiaryID}
+	args := []any{userID}
 	if limit > 0 {
 		q += " LIMIT $2"
 		args = append(args, limit)

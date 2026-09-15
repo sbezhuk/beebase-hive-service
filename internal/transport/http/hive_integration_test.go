@@ -1179,13 +1179,11 @@ func TestHiveFlow_CreateWithImages_RejectsForeignMedia(t *testing.T) {
 }
 
 // TestHiveFlow_FreeTierLimit proves the 5-hive Free limit is enforced,
-// end-to-end through the real HTTP handler, and that it's scoped to the
-// target apiary rather than the account: a 6th hive in the same apiary is
-// rejected, but a hive in a second (also currently-writable, per this
-// fake) apiary is unaffected by the first apiary already being full - see
-// application/hive.Service.Create's doc comment for why this scoping is
-// the finalized product model, not the account-wide count an earlier
-// version of this test assumed.
+// end-to-end through the real HTTP handler, as a per-user, account-wide
+// quota (FreeMaxHives) - not scoped to any single apiary: once the
+// account holds 5 hives, a 6th is rejected regardless of which apiary
+// (even a different, still-writable one) it targets. See
+// application/hive.Service.Create's doc comment.
 func TestHiveFlow_FreeTierLimit(t *testing.T) {
 	stack := newTestStack(t)
 	stack.subs.setEntitlement("free")
@@ -1227,14 +1225,19 @@ func TestHiveFlow_FreeTierLimit(t *testing.T) {
 		t.Fatalf("error code = %q, want %q", errBody.Error.Code, "hive_limit_reached")
 	}
 
-	// A hive in a second, unrelated apiary is unaffected - the limit is
-	// per-apiary, not account-wide.
+	// A hive in a second, otherwise-writable apiary is still rejected -
+	// the limit is account-wide, not per-apiary: the account already
+	// holds 5 hives regardless of which apiary they're in.
 	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
 		"apiary_id": apiaryID2.String(),
 		"name":      "Hive B1",
 	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create hive in apiary 2 (unrelated to apiary 1's limit): status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("create hive in apiary 2 (account already at 5 hives in apiary 1): status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	decodeJSON(t, resp, &errBody)
+	if errBody.Error.Code != "hive_limit_reached" {
+		t.Fatalf("error code = %q, want %q", errBody.Error.Code, "hive_limit_reached")
 	}
 }
 

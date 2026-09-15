@@ -2,10 +2,11 @@
 
 package postgres_test
 
-// Verifies WritableIDs' and CountByApiary's real-SQL behavior: the same
-// deterministic (created_at, id) ordering and per-apiary scoping proven
-// against the fake repository in application/hive's unit tests, now
-// against real PostgreSQL.
+// Verifies WritableIDs' real-SQL behavior: the same deterministic
+// (created_at, id) ordering, evaluated account-wide across all of a
+// user's apiaries (FreeMaxHives is a per-user quota, not per-apiary),
+// proven against the fake repository in application/hive's unit tests,
+// now against real PostgreSQL.
 
 import (
 	"context"
@@ -18,7 +19,7 @@ import (
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 )
 
-func TestHiveRepository_WritableIDs_OldestFirstWithinApiary(t *testing.T) {
+func TestHiveRepository_WritableIDs_OldestFirstAccountWide(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
@@ -47,7 +48,7 @@ func TestHiveRepository_WritableIDs_OldestFirstWithinApiary(t *testing.T) {
 		t.Fatalf("create newest: %v", err)
 	}
 
-	ids, err := repo.WritableIDs(ctx, apiaryID, 2)
+	ids, err := repo.WritableIDs(ctx, userID, 2)
 	if err != nil {
 		t.Fatalf("WritableIDs: %v", err)
 	}
@@ -56,11 +57,14 @@ func TestHiveRepository_WritableIDs_OldestFirstWithinApiary(t *testing.T) {
 	}
 }
 
-// TestHiveRepository_WritableIDs_ScopedToApiary proves hives in a
-// different apiary never affect another apiary's selection, even for the
-// same user - the hierarchical rule that a hive's rank is only ever
-// evaluated among its own apiary's siblings.
-func TestHiveRepository_WritableIDs_ScopedToApiary(t *testing.T) {
+// TestHiveRepository_WritableIDs_SpansMultipleApiaries proves the
+// selection pool is the user's complete set of hives across every apiary
+// they own, not scoped to any single one - FreeMaxHives is an
+// account-wide quota. Whether a given hive is actually writable also
+// depends on its parent apiary being writable (a separate check against
+// apiary-service, not exercised by this repository-level test), but the
+// ranking itself must never stop at an apiary boundary.
+func TestHiveRepository_WritableIDs_SpansMultipleApiaries(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 
@@ -79,31 +83,43 @@ func TestHiveRepository_WritableIDs_ScopedToApiary(t *testing.T) {
 	if err := repo.Create(ctx, inA); err != nil {
 		t.Fatalf("create in A: %v", err)
 	}
-	for i := 0; i < 3; i++ {
-		if err := repo.Create(ctx, hive.New(userID, apiaryB, uuid.NewString(), "")); err != nil {
+	inB := make([]*hive.Hive, 3)
+	for i := range inB {
+		h := hive.New(userID, apiaryB, uuid.NewString(), "")
+		h.CreatedAt = inA.CreatedAt.Add(time.Duration(i+1) * time.Hour)
+		if err := repo.Create(ctx, h); err != nil {
 			t.Fatalf("create in B %d: %v", i, err)
 		}
+		inB[i] = h
 	}
 
-	ids, err := repo.WritableIDs(ctx, apiaryA, 5)
+	// All 4 hives (1 in A, 3 in B) must appear, oldest first, regardless
+	// of apiary - a limit of 5 returns every hive the user owns.
+	ids, err := repo.WritableIDs(ctx, userID, 5)
 	if err != nil {
 		t.Fatalf("WritableIDs: %v", err)
 	}
-	if len(ids) != 1 || ids[0] != inA.ID {
-		t.Fatalf("WritableIDs(apiaryA) = %v, want [%s] - apiary B's hives must not leak in", ids, inA.ID)
+	want := []uuid.UUID{inA.ID, inB[0].ID, inB[1].ID, inB[2].ID}
+	if len(ids) != len(want) {
+		t.Fatalf("WritableIDs = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("WritableIDs[%d] = %s, want %s (account-wide oldest-first order)", i, ids[i], want[i])
+		}
 	}
 
-	count, err := repo.CountByApiary(ctx, apiaryA)
+	count, err := repo.CountByUser(ctx, userID)
 	if err != nil {
-		t.Fatalf("CountByApiary(apiaryA): %v", err)
+		t.Fatalf("CountByUser: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("CountByApiary(apiaryA) = %d, want 1", count)
+	if count != 4 {
+		t.Fatalf("CountByUser = %d, want 4 (across both apiaries)", count)
 	}
 }
 
 // TestHiveRepository_WritableIDs_ExcludesDeleted proves deleting a hive
-// automatically promotes the next-oldest survivor in the same apiary.
+// automatically promotes the next-oldest survivor account-wide.
 func TestHiveRepository_WritableIDs_ExcludesDeleted(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
@@ -132,7 +148,7 @@ func TestHiveRepository_WritableIDs_ExcludesDeleted(t *testing.T) {
 		t.Fatalf("HardDelete oldest: %v", err)
 	}
 
-	ids, err := repo.WritableIDs(ctx, apiaryID, 1)
+	ids, err := repo.WritableIDs(ctx, userID, 1)
 	if err != nil {
 		t.Fatalf("WritableIDs: %v", err)
 	}

@@ -25,24 +25,28 @@ type Repository interface {
 	// than maxCount active hives across all apiaries. If maxCount <= 0, creation is unlimited.
 	// Returns ErrLimitReached if the limit is exceeded.
 	CreateWithLimit(ctx context.Context, h *Hive, maxCount int) error
-	// CountByUser returns the total number of non-deleted hives owned by userID across all apiaries.
+	// CountByUser returns the total number of non-deleted hives owned by
+	// userID across all apiaries. Used to enforce the Free hive limit,
+	// which is a per-user, account-wide quota (see application/hive.
+	// FreeMaxHives) - independent of how many apiaries those hives are
+	// spread across, and independent of which apiary is currently
+	// writable. Parent-apiary writability is enforced separately (see
+	// ApiaryVerifier.Verify); this count exists purely to cap the
+	// account's total.
 	CountByUser(ctx context.Context, userID uuid.UUID) (int, error)
-	// CountByApiary returns the total number of non-deleted hives under
-	// apiaryID. Used to enforce the Free hive limit, which the product
-	// model scopes to hives within the one apiary a Free user may
-	// currently create into (see application/hive.Service.Create) -
-	// hives sitting under a different, currently-read-only apiary can
-	// never occupy a Free slot, so they must never count against it.
-	CountByApiary(ctx context.Context, apiaryID uuid.UUID) (int, error)
 	// WritableIDs returns the ids of the oldest up to limit non-deleted
-	// hives under apiaryID, ordered created_at ASC, id ASC - the
-	// deterministic selection of which of that apiary's hives fall within
-	// a Free user's writable-hive entitlement (see application/hive.
-	// FreeMaxHives) when apiaryID is itself the caller's writable apiary.
-	// Computed fresh from current live rows on every call, the same way
-	// apiary-service's WritableIDs is - see that method's doc comment for
-	// why. If limit <= 0, returns every hive id under apiaryID.
-	WritableIDs(ctx context.Context, apiaryID uuid.UUID, limit int) ([]uuid.UUID, error)
+	// hives owned by userID across all their apiaries, ordered
+	// created_at ASC, id ASC - the deterministic, account-wide selection
+	// of which hives fall within a Free user's writable-hive entitlement
+	// (see application/hive.FreeMaxHives). This ranking alone doesn't
+	// decide writability: a hive also needs its own parent apiary to be
+	// writable (see ApiaryVerifier.Verify) - a hive can rank inside this
+	// set yet still be read-only because its apiary isn't the caller's
+	// selected one. Computed fresh from current live rows on every call,
+	// the same way apiary-service's WritableIDs is - see that method's
+	// doc comment for why. If limit <= 0, returns every hive id userID
+	// owns.
+	WritableIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error)
 	GetByID(ctx context.Context, userID, hiveID uuid.UUID) (*Hive, error)
 	// ListByUser returns the page of hives described by p, along with the
 	// total number of hives userID owns (independent of p, for computing

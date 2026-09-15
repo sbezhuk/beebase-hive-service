@@ -59,12 +59,11 @@ func (f *fakeRepo) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount i
 		return hive.ErrNameTaken
 	}
 	if maxCount > 0 {
-		// Scoped to the target apiary, not the account - mirrors the real
-		// repository: only the target apiary's own hive count can ever be
-		// relevant to whether this specific create is allowed.
+		// Scoped to the user account, not the target apiary - mirrors the
+		// real repository: FreeMaxHives is a per-user, account-wide quota.
 		count := 0
 		for _, existing := range f.byID {
-			if existing.ApiaryID == h.ApiaryID && existing.DeletedAt == nil {
+			if existing.UserID == h.UserID && existing.DeletedAt == nil {
 				count++
 			}
 		}
@@ -77,29 +76,16 @@ func (f *fakeRepo) CreateWithLimit(ctx context.Context, h *hive.Hive, maxCount i
 	return nil
 }
 
-// CountByApiary returns the total number of non-deleted hives under
-// apiaryID.
-func (f *fakeRepo) CountByApiary(_ context.Context, apiaryID uuid.UUID) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	count := 0
-	for _, h := range f.byID {
-		if h.ApiaryID == apiaryID && h.DeletedAt == nil {
-			count++
-		}
-	}
-	return count, nil
-}
-
 // WritableIDs returns the ids of the oldest up to limit non-deleted hives
-// under apiaryID, ordered created_at ASC, id ASC - mirroring the real
-// repository's deterministic Free-entitlement selection.
-func (f *fakeRepo) WritableIDs(_ context.Context, apiaryID uuid.UUID, limit int) ([]uuid.UUID, error) {
+// owned by userID across all their apiaries, ordered created_at ASC, id
+// ASC - mirroring the real repository's deterministic, account-wide
+// Free-entitlement selection.
+func (f *fakeRepo) WritableIDs(_ context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var all []*hive.Hive
 	for _, h := range f.byID {
-		if h.ApiaryID == apiaryID && h.DeletedAt == nil {
+		if h.UserID == userID && h.DeletedAt == nil {
 			all = append(all, h)
 		}
 	}
@@ -2071,13 +2057,13 @@ func TestCreate_FreeTier_CannotCreateUnderReadOnlyApiary(t *testing.T) {
 	}
 }
 
-// TestCreate_FreeTier_LimitScopedToWritableApiaryOnly proves the 5-hive
-// limit is evaluated against the target apiary's own hive count, not the
-// account's total: pre-existing hives sitting under a different,
-// currently read-only apiary (left over from a prior Pro period, say)
-// must never count against the limit for the apiary a Free user can
-// actually create into.
-func TestCreate_FreeTier_LimitScopedToWritableApiaryOnly(t *testing.T) {
+// TestCreate_FreeTier_LimitIsAccountWideNotPerApiary proves the 5-hive
+// limit is a per-user, account-wide quota (FreeMaxHives), not scoped to
+// the target apiary: hives sitting under a different, currently
+// read-only apiary (left over from a prior Pro period, say) still count
+// against the limit for the apiary a Free user can actually create into -
+// so only the remaining slots are available there, not a fresh 5.
+func TestCreate_FreeTier_LimitIsAccountWideNotPerApiary(t *testing.T) {
 	verifier := newFakeApiaryVerifier()
 	repo := newFakeRepo()
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
@@ -2091,28 +2077,86 @@ func TestCreate_FreeTier_LimitScopedToWritableApiaryOnly(t *testing.T) {
 
 	// 4 hives already sit under lockedApiary (e.g. created back when it
 	// was the writable one) - now apiary-service reports it read-only.
+	// They still count against the account's 5-hive quota.
 	for i := 0; i < 4; i++ {
 		mustCreate(t, repo, hive.New(userID, lockedApiary, fmt.Sprintf("Old %d", i), ""))
 	}
 	verifier.lock(lockedApiary)
 
-	// The new writable apiary starts empty, so all 5 Free slots are still
-	// available there, unaffected by lockedApiary's 4 hives.
-	for i := 1; i <= 5; i++ {
-		if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
-			ApiaryID: writableApiary,
-			Name:     fmt.Sprintf("New %d", i),
-		}); err != nil {
-			t.Fatalf("create %d in the writable apiary failed: %v", i, err)
-		}
+	// Only 1 slot remains account-wide (5 - 4 already in lockedApiary).
+	if _, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+		ApiaryID: writableApiary,
+		Name:     "New 1",
+	}); err != nil {
+		t.Fatalf("1st create in the writable apiary failed: %v", err)
 	}
 
 	_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
 		ApiaryID: writableApiary,
-		Name:     "Sixth",
+		Name:     "New 2",
 	})
 	if !errors.Is(err, apphive.ErrHiveLimitReached) {
-		t.Fatalf("6th hive in the writable apiary: got %v, want ErrHiveLimitReached", err)
+		t.Fatalf("2nd create in the writable apiary (6th account-wide): got %v, want ErrHiveLimitReached", err)
+	}
+}
+
+// TestCreate_FreeTier_ConcurrentAcrossApiaries_DoesNotExceedAccountLimit
+// proves two concurrent creates into different apiaries for the same
+// user cannot together exceed the account's 5-hive quota - the
+// application-level analogue of the repository's advisory-lock
+// concurrency test, using the fake repo's own mutex-guarded map to
+// simulate the race.
+func TestCreate_FreeTier_ConcurrentAcrossApiaries_DoesNotExceedAccountLimit(t *testing.T) {
+	verifier := newFakeApiaryVerifier()
+	repo := newFakeRepo()
+	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(inspectionwarning.DefaultThresholdDays), newFakeMediaClient(), subs)
+	userID := uuid.New()
+	apiaryA := uuid.New()
+	apiaryB := uuid.New()
+	token := "token"
+	verifier.allow(token, apiaryA)
+	verifier.allow(token, apiaryB)
+
+	const attempts = 10
+	var wg sync.WaitGroup
+	results := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		apiaryID := apiaryA
+		if i%2 == 0 {
+			apiaryID = apiaryB
+		}
+		go func(i int, apiaryID uuid.UUID) {
+			defer wg.Done()
+			_, err := svc.Create(context.Background(), userID, token, apphive.CreateInput{
+				ApiaryID: apiaryID,
+				Name:     fmt.Sprintf("Concurrent %d", i),
+			})
+			results <- err
+		}(i, apiaryID)
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, apphive.ErrHiveLimitReached) {
+			t.Fatalf("unexpected error from a concurrent create: %v", err)
+		}
+	}
+	if successes != apphive.FreeMaxHives {
+		t.Fatalf("successful concurrent creates across 2 apiaries = %d, want exactly %d (the account limit)", successes, apphive.FreeMaxHives)
+	}
+
+	count, err := repo.CountByUser(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("CountByUser: %v", err)
+	}
+	if count != apphive.FreeMaxHives {
+		t.Fatalf("final account hive count = %d, want %d", count, apphive.FreeMaxHives)
 	}
 }
 

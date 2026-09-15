@@ -66,11 +66,13 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		if !apiaryWritable {
 			return nil, ErrParentReadOnly
 		}
-		// The limit is scoped to this apiary, not the account: hives
-		// under a different, currently read-only apiary can never occupy
-		// a Free slot, so they must never count against it (see
-		// domain/hive.Repository.CountByApiary).
-		count, err := s.hives.CountByApiary(ctx, in.ApiaryID)
+		// The 5-hive Free limit is account-wide, not scoped to this
+		// apiary: FreeMaxHives is a per-user quota (see FreeMaxHives),
+		// independent of how many apiaries the count is spread across.
+		// Parent-apiary writability (checked above) is what actually
+		// gates whether a hive can be created at all; this count only
+		// ever guards how many the account may hold in total.
+		count, err := s.hives.CountByUser(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("hive: count hives: %w", err)
 		}
@@ -119,7 +121,7 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID, accessToken string,
 		return nil, err
 	}
 
-	writable, err := s.resolveWritable(ctx, accessToken, h)
+	writable, err := s.resolveWritable(ctx, userID, accessToken, h)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +132,7 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID, accessToken string,
 // resolveWritable reports whether h is currently writable for the caller:
 // always true under Pro, otherwise delegates to isWritable. accessToken is
 // forwarded to subscription-service.
-func (s *Service) resolveWritable(ctx context.Context, accessToken string, h *hive.Hive) (bool, error) {
+func (s *Service) resolveWritable(ctx context.Context, userID uuid.UUID, accessToken string, h *hive.Hive) (bool, error) {
 	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
 	if err != nil {
 		return false, fmt.Errorf("hive: resolve entitlement: %w", err)
@@ -138,19 +140,22 @@ func (s *Service) resolveWritable(ctx context.Context, accessToken string, h *hi
 	if entitlement != EntitlementFree {
 		return true, nil
 	}
-	return s.isWritable(ctx, accessToken, h)
+	return s.isWritable(ctx, userID, accessToken, h)
 }
 
 // isWritable reports whether h is currently writable under the caller's
 // Free entitlement: its parent apiary must itself be writable (asked of
 // apiary-service, the sole source of truth for apiary ordering - see
-// ApiaryVerifier.Verify), and h must rank among the first FreeMaxHives
-// hives within that apiary by (created_at, id). A hive under a read-only
-// apiary can never be writable, no matter how few hives it has - and a
-// hive's own rank is only ever evaluated within its own apiary's hives,
-// never against hives elsewhere in the account. Recomputed from current
-// data on every call, the same way apiary-service's isWritable is.
-func (s *Service) isWritable(ctx context.Context, accessToken string, h *hive.Hive) (bool, error) {
+// ApiaryVerifier.Verify), and h must rank among userID's first
+// FreeMaxHives hives account-wide by (created_at, id) - not merely within
+// its own apiary. FreeMaxHives is a per-user quota (see FreeMaxHives), so
+// a hive's rank is always evaluated against every hive the user owns,
+// regardless of apiary; the parent-apiary check is what actually excludes
+// hives sitting in a locked apiary; it's not folded into the ranking
+// pool itself. A hive under a read-only apiary can never be writable no
+// matter its rank. Recomputed from current data on every call, the same
+// way apiary-service's isWritable is.
+func (s *Service) isWritable(ctx context.Context, userID uuid.UUID, accessToken string, h *hive.Hive) (bool, error) {
 	apiaryWritable, err := s.apiaries.Verify(ctx, accessToken, h.ApiaryID)
 	if err != nil {
 		return false, err
@@ -158,16 +163,17 @@ func (s *Service) isWritable(ctx context.Context, accessToken string, h *hive.Hi
 	if !apiaryWritable {
 		return false, nil
 	}
-	return s.hiveRankWritable(ctx, h)
+	return s.hiveRankWritable(ctx, userID, h)
 }
 
-// hiveRankWritable reports whether h ranks among the first FreeMaxHives
-// hives within its own apiary by (created_at, id) - the hive-level half
-// of isWritable, factored out so Update can call apiaries.Verify itself
-// (to tell a locked parent apart from a locked hive - see ErrParentReadOnly
-// vs ErrReadOnly) without this repeating that same call.
-func (s *Service) hiveRankWritable(ctx context.Context, h *hive.Hive) (bool, error) {
-	ids, err := s.hives.WritableIDs(ctx, h.ApiaryID, FreeMaxHives)
+// hiveRankWritable reports whether h ranks among userID's first
+// FreeMaxHives hives account-wide by (created_at, id) - the hive-level
+// half of isWritable, factored out so Update can call apiaries.Verify
+// itself (to tell a locked parent apart from a locked hive - see
+// ErrParentReadOnly vs ErrReadOnly) without this repeating that same
+// call.
+func (s *Service) hiveRankWritable(ctx context.Context, userID uuid.UUID, h *hive.Hive) (bool, error) {
+	ids, err := s.hives.WritableIDs(ctx, userID, FreeMaxHives)
 	if err != nil {
 		return false, fmt.Errorf("hive: writable hive ids: %w", err)
 	}
@@ -204,7 +210,7 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string
 		return nil, 0, err
 	}
 
-	annotate, err := s.newWritabilityCheck(ctx, accessToken)
+	annotate, err := s.newWritabilityCheck(ctx, userID, accessToken)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -216,17 +222,18 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string
 	return out, total, nil
 }
 
-// newWritabilityCheck resolves, once, the caller's entitlement and (only
-// if Free) their single writable apiary id and its writable hive-id set,
-// then returns a closure reporting per-hive writability with no further
-// calls - used by List, whose hives may span several apiaries in one
-// page, so this stays a single entitlement call and a single apiary-
-// service call no matter the page size or how many distinct apiaries
-// appear in it. The writable set always comes from the caller's complete
-// live hives under that apiary, never from the current page or search
-// result, so which page or search term is being viewed can never change
-// which hive the closure reports as writable.
-func (s *Service) newWritabilityCheck(ctx context.Context, accessToken string) (func(*hive.Hive) bool, error) {
+// newWritabilityCheck resolves, once, the caller's entitlement, their
+// single writable apiary id, and (only if Free) userID's account-wide
+// writable hive-id set, then returns a closure reporting per-hive
+// writability with no further calls - used by List, whose hives may span
+// several apiaries in one page, so this stays a single entitlement call,
+// a single apiary-service call, and a single local query no matter the
+// page size or how many distinct apiaries appear in it. The writable set
+// always comes from the caller's complete live hives account-wide, never
+// from the current page or search result, so which page or search term
+// is being viewed can never change which hive the closure reports as
+// writable.
+func (s *Service) newWritabilityCheck(ctx context.Context, userID uuid.UUID, accessToken string) (func(*hive.Hive) bool, error) {
 	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
 	if err != nil {
 		return nil, fmt.Errorf("hive: resolve entitlement: %w", err)
@@ -246,7 +253,7 @@ func (s *Service) newWritabilityCheck(ctx context.Context, accessToken string) (
 		return func(*hive.Hive) bool { return false }, nil
 	}
 
-	ids, err := s.hives.WritableIDs(ctx, *writableApiaryID, FreeMaxHives)
+	ids, err := s.hives.WritableIDs(ctx, userID, FreeMaxHives)
 	if err != nil {
 		return nil, fmt.Errorf("hive: writable hive ids: %w", err)
 	}
@@ -295,11 +302,13 @@ func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToke
 	// apiaryID is already fixed (it's the path this method lists under),
 	// and Verify above already resolved its writability - so, unlike
 	// List, no second apiary-service call is needed here to learn which
-	// apiary is writable: one local, bounded query is enough to know
-	// which of its hives are.
+	// apiary is writable. The hive-id ranking itself is still account-wide
+	// (FreeMaxHives is a per-user quota, not per-apiary), so it's the same
+	// query List's newWritabilityCheck runs, just inlined here since the
+	// apiary half of the answer is already known.
 	var writableHives map[uuid.UUID]bool
 	if entitlement == EntitlementFree && apiaryWritable {
-		ids, err := s.hives.WritableIDs(ctx, apiaryID, FreeMaxHives)
+		ids, err := s.hives.WritableIDs(ctx, userID, FreeMaxHives)
 		if err != nil {
 			return nil, 0, fmt.Errorf("hive: writable hive ids: %w", err)
 		}
@@ -388,7 +397,7 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 		if !apiaryWritable {
 			return nil, ErrParentReadOnly
 		}
-		writable, err := s.hiveRankWritable(ctx, h)
+		writable, err := s.hiveRankWritable(ctx, userID, h)
 		if err != nil {
 			return nil, err
 		}
