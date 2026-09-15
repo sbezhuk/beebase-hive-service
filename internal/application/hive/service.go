@@ -46,8 +46,9 @@ func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections Insp
 // verification fails, Create returns the error immediately, having
 // created nothing - there is no rollback to do, unlike the old
 // attach-after-insert flow this replaced.
-func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken string, in CreateInput) (*hive.Hive, error) {
-	if err := s.apiaries.Verify(ctx, accessToken, in.ApiaryID); err != nil {
+func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken string, in CreateInput) (*WithAccess, error) {
+	apiaryWritable, err := s.apiaries.Verify(ctx, accessToken, in.ApiaryID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -58,7 +59,18 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 
 	maxHives := 0 // 0 means unlimited
 	if entitlement == EntitlementFree {
-		count, err := s.hives.CountByUser(ctx, userID)
+		// A Free user may only ever create into their one writable
+		// apiary - creating under a currently read-only apiary is
+		// rejected outright, regardless of how many hives they have
+		// elsewhere.
+		if !apiaryWritable {
+			return nil, ErrParentReadOnly
+		}
+		// The limit is scoped to this apiary, not the account: hives
+		// under a different, currently read-only apiary can never occupy
+		// a Free slot, so they must never count against it (see
+		// domain/hive.Repository.CountByApiary).
+		count, err := s.hives.CountByApiary(ctx, in.ApiaryID)
 		if err != nil {
 			return nil, fmt.Errorf("hive: count hives: %w", err)
 		}
@@ -88,14 +100,83 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, fmt.Errorf("hive: create: %w", err)
 	}
 
-	return h, nil
+	// A just-created hive is always writable: under Pro nothing is ever
+	// restricted; under Free, it was only allowed to be created because
+	// its parent apiary was just proven writable and the count check above
+	// proved it ranks within the first FreeMaxHives hives in that apiary.
+	return &WithAccess{Hive: h, Writable: true}, nil
 }
 
 // Get returns the hive identified by hiveID, if it belongs to userID -
-// including the media ids it references (Hive.Images), read straight
-// from the row rather than a media-service round trip.
-func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive, error) {
-	return s.hives.GetByID(ctx, userID, hiveID)
+// including the media ids it references (Hive.Images), read straight from
+// the row rather than a media-service round trip - along with whether
+// it's currently writable for the caller (see isWritable). accessToken is
+// the caller's own access token, forwarded to subscription-service and
+// apiary-service to resolve entitlement and parent-apiary writability.
+func (s *Service) Get(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID) (*WithAccess, error) {
+	h, err := s.hives.GetByID(ctx, userID, hiveID)
+	if err != nil {
+		return nil, err
+	}
+
+	writable, err := s.resolveWritable(ctx, accessToken, h)
+	if err != nil {
+		return nil, err
+	}
+
+	return &WithAccess{Hive: h, Writable: writable}, nil
+}
+
+// resolveWritable reports whether h is currently writable for the caller:
+// always true under Pro, otherwise delegates to isWritable. accessToken is
+// forwarded to subscription-service.
+func (s *Service) resolveWritable(ctx context.Context, accessToken string, h *hive.Hive) (bool, error) {
+	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
+	if err != nil {
+		return false, fmt.Errorf("hive: resolve entitlement: %w", err)
+	}
+	if entitlement != EntitlementFree {
+		return true, nil
+	}
+	return s.isWritable(ctx, accessToken, h)
+}
+
+// isWritable reports whether h is currently writable under the caller's
+// Free entitlement: its parent apiary must itself be writable (asked of
+// apiary-service, the sole source of truth for apiary ordering - see
+// ApiaryVerifier.Verify), and h must rank among the first FreeMaxHives
+// hives within that apiary by (created_at, id). A hive under a read-only
+// apiary can never be writable, no matter how few hives it has - and a
+// hive's own rank is only ever evaluated within its own apiary's hives,
+// never against hives elsewhere in the account. Recomputed from current
+// data on every call, the same way apiary-service's isWritable is.
+func (s *Service) isWritable(ctx context.Context, accessToken string, h *hive.Hive) (bool, error) {
+	apiaryWritable, err := s.apiaries.Verify(ctx, accessToken, h.ApiaryID)
+	if err != nil {
+		return false, err
+	}
+	if !apiaryWritable {
+		return false, nil
+	}
+	return s.hiveRankWritable(ctx, h)
+}
+
+// hiveRankWritable reports whether h ranks among the first FreeMaxHives
+// hives within its own apiary by (created_at, id) - the hive-level half
+// of isWritable, factored out so Update can call apiaries.Verify itself
+// (to tell a locked parent apart from a locked hive - see ErrParentReadOnly
+// vs ErrReadOnly) without this repeating that same call.
+func (s *Service) hiveRankWritable(ctx context.Context, h *hive.Hive) (bool, error) {
+	ids, err := s.hives.WritableIDs(ctx, h.ApiaryID, FreeMaxHives)
+	if err != nil {
+		return false, fmt.Errorf("hive: writable hive ids: %w", err)
+	}
+	for _, id := range ids {
+		if id == h.ID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // List returns the page of hives described by p, out of every hive
@@ -108,7 +189,7 @@ func (s *Service) Get(ctx context.Context, userID, hiveID uuid.UUID) (*hive.Hive
 // inspectionwarning) - accessToken is only ever used for that filter,
 // forwarded to inspection-service so it can compute the answer against
 // its own single configured threshold and inspection dates.
-func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string, p pagination.Params, search, sortOrder *string, needsInspection bool) ([]*hive.Hive, int, error) {
+func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string, p pagination.Params, search, sortOrder *string, needsInspection bool) ([]*WithAccess, int, error) {
 	var needsInspectionIDs []uuid.UUID
 	if needsInspection {
 		ids, err := s.needsInspectionHiveIDs(ctx, userID, accessToken)
@@ -117,7 +198,66 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string
 		}
 		needsInspectionIDs = ids
 	}
-	return s.hives.ListByUser(ctx, userID, p, search, sortOrder, needsInspection, needsInspectionIDs)
+
+	hives, total, err := s.hives.ListByUser(ctx, userID, p, search, sortOrder, needsInspection, needsInspectionIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	annotate, err := s.newWritabilityCheck(ctx, accessToken)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	out := make([]*WithAccess, len(hives))
+	for i, h := range hives {
+		out[i] = &WithAccess{Hive: h, Writable: annotate(h)}
+	}
+	return out, total, nil
+}
+
+// newWritabilityCheck resolves, once, the caller's entitlement and (only
+// if Free) their single writable apiary id and its writable hive-id set,
+// then returns a closure reporting per-hive writability with no further
+// calls - used by List, whose hives may span several apiaries in one
+// page, so this stays a single entitlement call and a single apiary-
+// service call no matter the page size or how many distinct apiaries
+// appear in it. The writable set always comes from the caller's complete
+// live hives under that apiary, never from the current page or search
+// result, so which page or search term is being viewed can never change
+// which hive the closure reports as writable.
+func (s *Service) newWritabilityCheck(ctx context.Context, accessToken string) (func(*hive.Hive) bool, error) {
+	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("hive: resolve entitlement: %w", err)
+	}
+	if entitlement != EntitlementFree {
+		return func(*hive.Hive) bool { return true }, nil
+	}
+
+	writableApiaryID, unrestricted, err := s.apiaries.WritableApiaryID(ctx, accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("hive: writable apiary id: %w", err)
+	}
+	if unrestricted {
+		return func(*hive.Hive) bool { return true }, nil
+	}
+	if writableApiaryID == nil {
+		return func(*hive.Hive) bool { return false }, nil
+	}
+
+	ids, err := s.hives.WritableIDs(ctx, *writableApiaryID, FreeMaxHives)
+	if err != nil {
+		return nil, fmt.Errorf("hive: writable hive ids: %w", err)
+	}
+	writableHives := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		writableHives[id] = true
+	}
+
+	return func(h *hive.Hive) bool {
+		return h.ApiaryID == *writableApiaryID && writableHives[h.ID]
+	}, nil
 }
 
 // ListByApiary returns the page of hives described by p belonging to
@@ -127,8 +267,9 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID, accessToken string
 // sortOrder is non-nil ("asc" or "desc") the page is ordered by creation
 // date in that direction instead of the repository's default order.
 // needsInspection behaves exactly as in List.
-func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspection bool) ([]*hive.Hive, int, error) {
-	if err := s.apiaries.Verify(ctx, accessToken, apiaryID); err != nil {
+func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToken string, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspection bool) ([]*WithAccess, int, error) {
+	apiaryWritable, err := s.apiaries.Verify(ctx, accessToken, apiaryID)
+	if err != nil {
 		return nil, 0, err
 	}
 
@@ -140,7 +281,40 @@ func (s *Service) ListByApiary(ctx context.Context, userID uuid.UUID, accessToke
 		}
 		needsInspectionIDs = ids
 	}
-	return s.hives.ListByApiary(ctx, userID, apiaryID, p, search, sortOrder, needsInspection, needsInspectionIDs)
+
+	hives, total, err := s.hives.ListByApiary(ctx, userID, apiaryID, p, search, sortOrder, needsInspection, needsInspectionIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
+	if err != nil {
+		return nil, 0, fmt.Errorf("hive: resolve entitlement: %w", err)
+	}
+
+	// apiaryID is already fixed (it's the path this method lists under),
+	// and Verify above already resolved its writability - so, unlike
+	// List, no second apiary-service call is needed here to learn which
+	// apiary is writable: one local, bounded query is enough to know
+	// which of its hives are.
+	var writableHives map[uuid.UUID]bool
+	if entitlement == EntitlementFree && apiaryWritable {
+		ids, err := s.hives.WritableIDs(ctx, apiaryID, FreeMaxHives)
+		if err != nil {
+			return nil, 0, fmt.Errorf("hive: writable hive ids: %w", err)
+		}
+		writableHives = make(map[uuid.UUID]bool, len(ids))
+		for _, id := range ids {
+			writableHives[id] = true
+		}
+	}
+
+	out := make([]*WithAccess, len(hives))
+	for i, h := range hives {
+		writable := entitlement != EntitlementFree || (apiaryWritable && writableHives[h.ID])
+		out[i] = &WithAccess{Hive: h, Writable: writable}
+	}
+	return out, total, nil
 }
 
 // needsInspectionHiveIDs returns the id of every hive userID owns that
@@ -196,10 +370,31 @@ func (s *Service) ApiaryIDsWithHives(ctx context.Context, userID uuid.UUID) ([]u
 // nothing external to reconcile against, since hive-service's own Images
 // column is already the sole source of truth for what's referenced. When
 // in.Images is nil, Images is left untouched entirely.
-func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID, in UpdateInput) (*hive.Hive, error) {
+func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID, in UpdateInput) (*WithAccess, error) {
 	h, err := s.hives.GetByID(ctx, userID, hiveID)
 	if err != nil {
 		return nil, err
+	}
+
+	entitlement, err := s.subscriptions.GetEntitlement(ctx, accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("hive: resolve entitlement: %w", err)
+	}
+	if entitlement == EntitlementFree {
+		apiaryWritable, err := s.apiaries.Verify(ctx, accessToken, h.ApiaryID)
+		if err != nil {
+			return nil, err
+		}
+		if !apiaryWritable {
+			return nil, ErrParentReadOnly
+		}
+		writable, err := s.hiveRankWritable(ctx, h)
+		if err != nil {
+			return nil, err
+		}
+		if !writable {
+			return nil, ErrReadOnly
+		}
 	}
 
 	if in.Images != nil {
@@ -223,7 +418,10 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, fmt.Errorf("hive: update: %w", err)
 	}
 
-	return h, nil
+	// The write above only ever succeeds when h was just proven writable
+	// (Pro, or the Free-writable checks above), so the result is always
+	// writable too.
+	return &WithAccess{Hive: h, Writable: true}, nil
 }
 
 // dedupeImages returns ids with duplicates removed, preserving the order

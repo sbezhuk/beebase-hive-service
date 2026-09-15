@@ -28,7 +28,7 @@ info:
     one. Removing an id from `images` only drops the reference; it does
     not delete the underlying file (deleting the whole hive does delete
     every file it references).
-  version: 0.6.0
+  version: 0.7.0
 servers:
   - url: http://localhost:8080
 
@@ -110,6 +110,17 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: >
+            Either the Free plan creation limit was reached (code
+            hive_limit_reached: 5 hives already exist in this apiary - the
+            limit is scoped to whichever apiary a Free user may currently
+            create into, not the account's total hive count), or apiary_id
+            itself is not currently writable under Free (code
+            parent_resource_pro_locked). Pro has no such limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "404":
           description: apiary_id doesn't exist, or belongs to a different user.
           content:
@@ -125,7 +136,11 @@ paths:
         limit=20. Each item's `images` reflects that hive's actual
         attached media ids - it's a local column now, not a per-item
         media-service round trip, so listing carries no extra cost to
-        include it.
+        include it. Each item's `writable` is resolved once for the whole
+        page (at most one extra call to apiary-service, regardless of how
+        many distinct apiaries the page spans) and reflects the caller's
+        complete set of hives, never just the current page or search
+        result.
       parameters:
         - name: page
           in: query
@@ -265,6 +280,18 @@ paths:
                   - { $ref: "#/components/schemas/ErrorResponse" }
         "401":
           description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: >
+            The hive is currently read-only under the caller's Free
+            entitlement: either the hive itself is outside the first 5 in
+            its apiary (code resource_pro_locked), or its parent apiary is
+            itself not the caller's writable one (code
+            parent_resource_pro_locked). Upgrading to Pro, or a promotion
+            (e.g. a currently-writable sibling is deleted), unblocks this
+            immediately.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -457,6 +484,22 @@ components:
             The media currently attached to this hive, in every response
             including list items (see GET /hives) - never null, empty
             when there are no photos.
+        writable:
+          type: boolean
+          description: >
+            Whether the caller can currently edit this hive, create
+            inspections/harvests under it, or otherwise mutate it or its
+            descendants. Always true on a Pro subscription. Under Free,
+            true only when this hive's parent apiary is itself writable
+            (see ApiaryResponse.writable on apiary-service) and this hive
+            ranks among the caller's first 5 hives in that apiary by
+            creation order - every other hive remains fully readable
+            (including its inspections/harvests/media history) but
+            rejects writes with 403 resource_pro_locked (this hive itself
+            is outside the limit) or parent_resource_pro_locked (its
+            apiary is) until it's promoted (e.g. a currently-writable
+            sibling is deleted) or the caller upgrades to Pro. Deleting a
+            hive is never affected by this flag.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -493,6 +536,10 @@ components:
                 - invalid_body
                 - internal_error
                 - media_limit_reached
+                - hive_limit_reached
+                - hive_name_exists
+                - resource_pro_locked
+                - parent_resource_pro_locked
               example: hive_not_found
             message: { type: string, example: hive not found }
 

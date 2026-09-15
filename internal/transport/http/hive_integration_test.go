@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -51,17 +52,22 @@ func (alwaysActiveSessionChecker) IsActive(_ context.Context, _, _ uuid.UUID) (b
 
 // fakeApiaryService stands in for the real apiary-service: it owns
 // exactly one apiary per bearer token registered via allow, and answers
-// GET /api/v1/apiaries/{id} exactly like the real service would - 200 if
-// the presented token's owner owns that apiary, 404 otherwise - so this
-// test exercises hive-service's real cross-service HTTP call without
-// needing a second full service running.
+// GET /api/v1/apiaries/{id} exactly like the real service would - 200
+// (with a JSON body carrying "writable") if the presented token's owner
+// owns that apiary, 404 otherwise - so this test exercises hive-service's
+// real cross-service HTTP call without needing a second full service
+// running. It also answers GET /api/v1/apiaries/writable, used by
+// List/ListByApiary. allow() defaults a newly owned apiary to writable,
+// matching the common case; lock() flips one to read-only for tests
+// exercising the transitive parent-apiary check.
 type fakeApiaryService struct {
-	mu    sync.Mutex
-	owned map[string]map[uuid.UUID]bool // "Bearer <token>" -> apiaries it owns
+	mu       sync.Mutex
+	owned    map[string]map[uuid.UUID]bool // "Bearer <token>" -> apiaries it owns
+	readOnly map[uuid.UUID]bool            // apiaries explicitly marked not writable
 }
 
 func newFakeApiaryService() *fakeApiaryService {
-	return &fakeApiaryService{owned: map[string]map[uuid.UUID]bool{}}
+	return &fakeApiaryService{owned: map[string]map[uuid.UUID]bool{}, readOnly: map[uuid.UUID]bool{}}
 }
 
 func (f *fakeApiaryService) allow(token string, apiaryID uuid.UUID) {
@@ -74,7 +80,20 @@ func (f *fakeApiaryService) allow(token string, apiaryID uuid.UUID) {
 	f.owned[key][apiaryID] = true
 }
 
+// lock marks apiaryID as currently read-only, as the real apiary-service
+// would report once it falls outside the caller's Free entitlement.
+func (f *fakeApiaryService) lock(apiaryID uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readOnly[apiaryID] = true
+}
+
 func (f *fakeApiaryService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/v1/apiaries/writable" {
+		f.serveWritable(w, r)
+		return
+	}
+
 	f.mu.Lock()
 	owned := f.owned[r.Header.Get("Authorization")]
 	f.mu.Unlock()
@@ -84,7 +103,41 @@ func (f *fakeApiaryService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+
+	f.mu.Lock()
+	isWritable := !f.readOnly[apiaryID]
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"writable": isWritable})
+}
+
+// serveWritable answers GET /api/v1/apiaries/writable: the first
+// non-locked apiary owned by the caller, or {"unrestricted":false,
+// "apiary_id":null} if none. Deterministic iteration order (sorted by
+// string form) keeps tests reproducible.
+func (f *fakeApiaryService) serveWritable(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	owned := f.owned[r.Header.Get("Authorization")]
+	ids := make([]uuid.UUID, 0, len(owned))
+	for id := range owned {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	var apiaryID *uuid.UUID
+	for _, id := range ids {
+		if !f.readOnly[id] {
+			idCopy := id
+			apiaryID = &idCopy
+			break
+		}
+	}
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"unrestricted": false, "apiary_id": apiaryID})
 }
 
 // fakeCascadeTarget stands in for inspection-service's delete endpoint
@@ -1125,6 +1178,14 @@ func TestHiveFlow_CreateWithImages_RejectsForeignMedia(t *testing.T) {
 	}
 }
 
+// TestHiveFlow_FreeTierLimit proves the 5-hive Free limit is enforced,
+// end-to-end through the real HTTP handler, and that it's scoped to the
+// target apiary rather than the account: a 6th hive in the same apiary is
+// rejected, but a hive in a second (also currently-writable, per this
+// fake) apiary is unaffected by the first apiary already being full - see
+// application/hive.Service.Create's doc comment for why this scoping is
+// the finalized product model, not the account-wide count an earlier
+// version of this test assumed.
 func TestHiveFlow_FreeTierLimit(t *testing.T) {
 	stack := newTestStack(t)
 	stack.subs.setEntitlement("free")
@@ -1136,37 +1197,25 @@ func TestHiveFlow_FreeTierLimit(t *testing.T) {
 	stack.apiary.allow(token, apiaryID1)
 	stack.apiary.allow(token, apiaryID2)
 
-	// Create 3 hives in apiary 1
-	for i := 1; i <= 3; i++ {
+	// Fill apiary 1 up to the limit.
+	for i := 1; i <= 5; i++ {
 		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
 			"apiary_id": apiaryID1.String(),
-			"name":      "Hive A",
+			"name":      fmt.Sprintf("Hive A%d", i),
 		})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("create hive %d in apiary 1: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)
 		}
 	}
 
-	// Create 2 hives in apiary 2 (total = 5)
-	for i := 1; i <= 2; i++ {
-		resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
-			"apiary_id": apiaryID2.String(),
-			"name":      "Hive B",
-		})
-		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("create hive %d in apiary 2: status = %d, want %d", i, resp.StatusCode, http.StatusCreated)
-		}
-	}
-
-	// 6th hive (across any apiary) fails with 403 Forbidden and hive_limit_reached
+	// A 6th hive in the same (now full) apiary is rejected.
 	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
 		"apiary_id": apiaryID1.String(),
-		"name":      "Hive 6",
+		"name":      "Hive A6",
 	})
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("6th hive create: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+		t.Fatalf("6th hive create in apiary 1: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
-
 	var errBody struct {
 		Error struct {
 			Code    string `json:"code"`
@@ -1176,6 +1225,49 @@ func TestHiveFlow_FreeTierLimit(t *testing.T) {
 	decodeJSON(t, resp, &errBody)
 	if errBody.Error.Code != "hive_limit_reached" {
 		t.Fatalf("error code = %q, want %q", errBody.Error.Code, "hive_limit_reached")
+	}
+
+	// A hive in a second, unrelated apiary is unaffected - the limit is
+	// per-apiary, not account-wide.
+	resp = stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
+		"apiary_id": apiaryID2.String(),
+		"name":      "Hive B1",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create hive in apiary 2 (unrelated to apiary 1's limit): status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+}
+
+// TestHiveFlow_FreeTierLimit_ParentApiaryReadOnly proves a Free user
+// cannot create a hive under an apiary apiary-service reports as
+// read-only, even though they own it - end-to-end through the real HTTP
+// handler and the fake apiary-service's "writable" JSON field.
+func TestHiveFlow_FreeTierLimit_ParentApiaryReadOnly(t *testing.T) {
+	stack := newTestStack(t)
+	stack.subs.setEntitlement("free")
+
+	userID := uuid.New()
+	lockedApiary := uuid.New()
+	token := stack.tokenFor(t, userID)
+	stack.apiary.allow(token, lockedApiary)
+	stack.apiary.lock(lockedApiary)
+
+	resp := stack.request(t, http.MethodPost, "/api/v1/hives", token, map[string]any{
+		"apiary_id": lockedApiary.String(),
+		"name":      "Squatter",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("create under a read-only apiary: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	if errBody.Error.Code != "parent_resource_pro_locked" {
+		t.Fatalf("error code = %q, want %q", errBody.Error.Code, "parent_resource_pro_locked")
 	}
 }
 

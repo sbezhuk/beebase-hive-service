@@ -39,6 +39,14 @@ const (
 	CodeHiveLimitReached  = "hive_limit_reached"
 	CodeHiveNameExists    = "hive_name_exists"
 	CodeMediaLimitReached = "media_limit_reached"
+	// CodeResourceProLocked identifies a write attempted against a hive
+	// that itself currently requires Pro. CodeParentResourceProLocked
+	// identifies a write attempted against (or under) a hive whose parent
+	// apiary currently requires Pro - distinct so a client can tell "this
+	// hive needs Pro" apart from "its apiary needs Pro" without parsing
+	// the message.
+	CodeResourceProLocked       = "resource_pro_locked"
+	CodeParentResourceProLocked = "parent_resource_pro_locked"
 )
 
 const minSearchLength = 3
@@ -218,7 +226,7 @@ func parseSortOrder(r *http.Request, fields map[string]string) (*string, map[str
 
 // Get handles GET /hives/{hiveID}.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	userID, ok := h.requireUserID(w, r)
+	userID, token, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
@@ -228,7 +236,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	got, err := h.service.Get(r.Context(), userID, hiveID)
+	got, err := h.service.Get(r.Context(), userID, token, hiveID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -383,6 +391,10 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteValidationError(w, map[string]string{"images": CodeImageNotFound})
 	case errors.Is(err, apphive.ErrHiveLimitReached):
 		httpx.WriteError(w, http.StatusForbidden, CodeHiveLimitReached, "free tier allows a maximum of 5 hives")
+	case errors.Is(err, apphive.ErrReadOnly):
+		httpx.WriteError(w, http.StatusForbidden, CodeResourceProLocked, "this hive requires Pro to edit")
+	case errors.Is(err, apphive.ErrParentReadOnly):
+		httpx.WriteError(w, http.StatusForbidden, CodeParentResourceProLocked, "this hive's apiary requires Pro to edit")
 	case errors.Is(err, apphive.ErrMediaLimitReached):
 		httpx.WriteError(w, http.StatusBadRequest, CodeMediaLimitReached, "maximum 5 photos allowed")
 	case errors.Is(err, hive.ErrNameTaken):
