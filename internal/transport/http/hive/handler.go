@@ -133,7 +133,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(newListResponse(hives, h.publicBaseURL), p, total))
 }
 
-// ListByApiary handles GET /api/v1/apiaries/{apiaryID}/hives.
+// ListByApiary handles GET /api/v1/apiaries/{apiaryId}/hives.
 func (h *Handler) ListByApiary(w http.ResponseWriter, r *http.Request) {
 	userID, token, ok := h.requireAuth(w, r)
 	if !ok {
@@ -373,7 +373,7 @@ func (h *Handler) pathHiveID(w http.ResponseWriter, r *http.Request) (uuid.UUID,
 }
 
 func (h *Handler) pathApiaryID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	id, err := uuid.Parse(chi.URLParam(r, "apiaryID"))
+	id, err := uuid.Parse(chi.URLParam(r, "apiaryId"))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, CodeInvalidApiaryID, "apiary id must be a valid UUID")
 		return uuid.Nil, false

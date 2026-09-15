@@ -63,7 +63,7 @@ func NewRouter(
 			r.Delete("/", hiveHandler.DeleteByApiary)
 		})
 
-		r.Get("/api/v1/apiaries/{apiaryID}/hives", hiveHandler.ListByApiary)
+		r.Get("/api/v1/apiaries/{apiaryId}/hives", hiveHandler.ListByApiary)
 	})
 
 	return r

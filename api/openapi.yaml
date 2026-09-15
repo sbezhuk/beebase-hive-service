@@ -324,9 +324,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
-  /api/v1/apiaries/{apiaryID}/hives:
+  /api/v1/apiaries/{apiaryId}/hives:
     parameters:
-      - name: apiaryID
+      - name: apiaryId
         in: path
         required: true
         description: Apiary ID.
@@ -337,7 +337,7 @@ paths:
       summary: List the authenticated user's hives for one apiary
       description: >
         Returns only hives owned by the caller belonging to this apiary, as a
-        page of results. Rejected with 404 apiary_not_found if apiaryID doesn't
+        page of results. Rejected with 404 apiary_not_found if apiaryId doesn't
         exist or doesn't belong to the caller — verified live against
         apiary-service. Omitting page/limit falls back to page=1, limit=20.
         Each item's images reflects that hive's actual attached media ids.
