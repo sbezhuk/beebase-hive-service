@@ -57,6 +57,7 @@ type Config struct {
 	// SubscriptionServiceURL is subscription-service's base URL, used to
 	// query the caller's entitlement level (free vs pro) on hive creation.
 	SubscriptionServiceURL string
+	NotificationServiceURL string
 }
 
 // Load builds a Config from environment variables, falling back to
@@ -86,6 +87,7 @@ func Load() (*Config, error) {
 		InspectionServiceURL:   getEnv("INSPECTION_SERVICE_URL", ""),
 		MediaServiceURL:        getEnv("MEDIA_SERVICE_URL", ""),
 		SubscriptionServiceURL: getEnv("SUBSCRIPTION_SERVICE_URL", ""),
+		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", ""),
 	}
 
 	if cfg.DatabaseURL == "" {

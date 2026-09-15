@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	httpmw "github.com/sbezhuk/beebase-common/authmw"
@@ -31,6 +32,7 @@ func NewRouter(
 
 	r.Get("/health", HealthHandler)
 	r.Get("/ready", ReadyHandler(db))
+	r.Get("/internal/api/v1/hives/{id}/exists", existsHandler(db, "hives", true))
 
 	r.Group(func(r chi.Router) {
 		r.Use(httpmw.RequireAuth(tokenParser))
@@ -59,6 +61,30 @@ func NewRouter(
 	})
 
 	return r
+}
+func existsHandler(db *pgxpool.Pool, table string, soft bool) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, e := uuid.Parse(chi.URLParam(r, "id"))
+		if e != nil {
+			http.NotFound(w, r)
+			return
+		}
+		q := "SELECT EXISTS(SELECT 1 FROM " + table + " WHERE id=$1"
+		if soft {
+			q += " AND deleted_at IS NULL"
+		}
+		q += ")"
+		var ok bool
+		if e = db.QueryRow(r.Context(), q, id).Scan(&ok); e != nil {
+			http.Error(w, "", 500)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 // requestLogger logs each request's method, path, status, and duration
