@@ -37,6 +37,14 @@ type InspectionDeleter interface {
 	DeleteByHive(ctx context.Context, accessToken string, hiveID uuid.UUID) error
 }
 
+type HarvestDeleter interface {
+	DeleteByHive(ctx context.Context, accessToken string, hiveID uuid.UUID) error
+}
+
+type EntityCleanup interface {
+	Cleanup(ctx context.Context, entityType string, entityID uuid.UUID) error
+}
+
 // MediaClient is hive-service's dependency on media-service. media-service
 // has no notion of apiaries or hives at all - it only knows which files
 // belong to which uploader - so hive-service is fully self-sufficient for

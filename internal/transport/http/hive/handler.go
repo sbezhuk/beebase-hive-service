@@ -62,6 +62,10 @@ type Handler struct {
 	}
 }
 
+func (h *Handler) DeleteUserData(ctx context.Context, userID uuid.UUID) error {
+	return h.service.DeleteLocalByUser(ctx, userID)
+}
+
 // NewHandler returns a Handler backed by service. publicBaseURL is the
 // gateway's externally reachable base URL, used to build each image's
 // image_url.

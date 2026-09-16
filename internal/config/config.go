@@ -53,6 +53,7 @@ type Config struct {
 	// inspections and media; this service asks each to delete everything
 	// under the hive before hard-deleting it.
 	InspectionServiceURL string
+	HarvestServiceURL    string
 	MediaServiceURL      string
 
 	// SubscriptionServiceURL is subscription-service's base URL, used to
@@ -86,6 +87,7 @@ func Load() (*Config, error) {
 		ApiaryServiceURL: getEnv("APIARY_SERVICE_URL", ""),
 
 		InspectionServiceURL:   getEnv("INSPECTION_SERVICE_URL", ""),
+		HarvestServiceURL:      getEnv("HARVEST_SERVICE_URL", ""),
 		MediaServiceURL:        getEnv("MEDIA_SERVICE_URL", ""),
 		SubscriptionServiceURL: getEnv("SUBSCRIPTION_SERVICE_URL", ""),
 		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", ""),
@@ -108,6 +110,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.ApiaryServiceURL == "" {
 		return nil, fmt.Errorf("config: APIARY_SERVICE_URL is required")
+	}
+	if cfg.HarvestServiceURL == "" {
+		return nil, fmt.Errorf("config: HARVEST_SERVICE_URL is required")
 	}
 	if cfg.InspectionServiceURL == "" {
 		return nil, fmt.Errorf("config: INSPECTION_SERVICE_URL is required")

@@ -28,11 +28,22 @@ type Service struct {
 	inspectionStatus InspectionStatusProvider
 	media            MediaClient
 	subscriptions    EntitlementResolver
+	harvests         HarvestDeleter
+	reminders        EntityCleanup
 }
 
 // NewService constructs a Service.
-func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, inspectionStatus InspectionStatusProvider, media MediaClient, subscriptions EntitlementResolver) *Service {
-	return &Service{hives: hives, apiaries: apiaries, inspections: inspections, inspectionStatus: inspectionStatus, media: media, subscriptions: subscriptions}
+func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections InspectionDeleter, inspectionStatus InspectionStatusProvider, media MediaClient, subscriptions EntitlementResolver, extras ...any) *Service {
+	s := &Service{hives: hives, apiaries: apiaries, inspections: inspections, inspectionStatus: inspectionStatus, media: media, subscriptions: subscriptions}
+	for _, extra := range extras {
+		switch v := extra.(type) {
+		case HarvestDeleter:
+			s.harvests = v
+		case EntityCleanup:
+			s.reminders = v
+		}
+	}
+	return s
 }
 
 // Create creates a new hive owned by userID under in.ApiaryID, after
@@ -486,12 +497,32 @@ func (s *Service) DeleteByApiary(ctx context.Context, userID uuid.UUID, accessTo
 	return nil
 }
 
+func (s *Service) DeleteLocalByUser(ctx context.Context, userID uuid.UUID) error {
+	r, ok := s.hives.(interface {
+		DeleteAllByUserHard(context.Context, uuid.UUID) error
+	})
+	if !ok {
+		return fmt.Errorf("hive: repository does not support account cleanup")
+	}
+	return r.DeleteAllByUserHard(ctx, userID)
+}
+
 func (s *Service) deleteCascade(ctx context.Context, userID uuid.UUID, accessToken string, h *hive.Hive) error {
 	if err := s.inspections.DeleteByHive(ctx, accessToken, h.ID); err != nil {
 		return err
 	}
 	if len(h.Images) > 0 {
 		if err := s.media.DeleteByIDs(ctx, accessToken, h.Images); err != nil {
+			return err
+		}
+	}
+	if s.harvests != nil {
+		if err := s.harvests.DeleteByHive(ctx, accessToken, h.ID); err != nil {
+			return err
+		}
+	}
+	if s.reminders != nil {
+		if err := s.reminders.Cleanup(ctx, "hive", h.ID); err != nil {
 			return err
 		}
 	}

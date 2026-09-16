@@ -401,6 +401,46 @@ type fakeInspectionDeleter struct {
 	failFor map[uuid.UUID]error
 }
 
+type fakeHarvestDeleter struct{ deleted []uuid.UUID }
+
+func (f *fakeHarvestDeleter) DeleteByHive(_ context.Context, _ string, id uuid.UUID) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+type fakeEntityCleanup struct{ entities []string }
+
+func (f *fakeEntityCleanup) Cleanup(_ context.Context, typ string, id uuid.UUID) error {
+	f.entities = append(f.entities, typ+":"+id.String())
+	return nil
+}
+
+func TestDelete_CascadesHarvestsAndHiveReminder(t *testing.T) {
+	userID, apiaryID, token := uuid.New(), uuid.New(), "token"
+	repo := newFakeRepo()
+	verifier := newFakeApiaryVerifier()
+	verifier.allow(token, apiaryID)
+	h := hive.New(userID, apiaryID, "hive", "")
+	if err := repo.Create(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+	harvests := &fakeHarvestDeleter{}
+	cleanup := &fakeEntityCleanup{}
+	svc := apphive.NewService(repo, verifier, newFakeInspectionDeleter(), newFakeInspectionStatusProvider(7), newFakeMediaClient(), newFakeSubscriptionClient(), harvests, cleanup)
+	if err := svc.Delete(context.Background(), userID, token, h.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(harvests.deleted) != 1 || harvests.deleted[0] != h.ID {
+		t.Fatalf("harvest cascade = %v", harvests.deleted)
+	}
+	if len(cleanup.entities) != 1 || cleanup.entities[0] != "hive:"+h.ID.String() {
+		t.Fatalf("reminder cleanup = %v", cleanup.entities)
+	}
+	if _, err := repo.GetByID(context.Background(), userID, h.ID); !errors.Is(err, hive.ErrNotFound) {
+		t.Fatalf("hive survived delete: %v", err)
+	}
+}
+
 func newFakeInspectionDeleter() *fakeInspectionDeleter {
 	return &fakeInspectionDeleter{failFor: map[uuid.UUID]error{}}
 }

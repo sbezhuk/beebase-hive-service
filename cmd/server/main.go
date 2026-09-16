@@ -14,6 +14,7 @@ import (
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	"github.com/sbezhuk/beebase-hive-service/internal/config"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
+	"github.com/sbezhuk/beebase-hive-service/internal/platform/harvestclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/inspectionclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/mediaclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/notificationclient"
@@ -84,10 +85,12 @@ func run() error {
 	hiveRepo := repopostgres.NewHiveRepository(db)
 	apiaryVerifier := apiaryclient.New(cfg.ApiaryServiceURL)
 	inspectionDeleter := inspectionclient.New(cfg.InspectionServiceURL)
+	harvestDeleter := harvestclient.New(cfg.HarvestServiceURL)
 	mediaDeleter := mediaclient.New(cfg.MediaServiceURL)
 	subscriptionClient := subscriptionclient.New(cfg.SubscriptionServiceURL)
-	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient)
-	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notificationclient.New(cfg.NotificationServiceURL, cfg.InternalServiceToken))
+	notifications := notificationclient.New(cfg.NotificationServiceURL, cfg.InternalServiceToken)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient, harvestDeleter, notifications)
+	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notifications)
 
 	router := transporthttp.NewRouter(log, db, hiveHandler, verifier, cfg.InternalServiceToken)
 

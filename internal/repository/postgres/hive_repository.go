@@ -429,3 +429,8 @@ func (r *HiveRepository) HardDelete(ctx context.Context, userID, hiveID uuid.UUI
 
 	return nil
 }
+
+func (r *HiveRepository) DeleteAllByUserHard(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `DELETE FROM hives WHERE user_id = $1`, userID)
+	return err
+}

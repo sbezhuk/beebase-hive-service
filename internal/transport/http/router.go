@@ -3,6 +3,7 @@
 package http
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	httpmw "github.com/sbezhuk/beebase-common/authmw"
+	"github.com/sbezhuk/beebase-common/httpx"
 	"github.com/sbezhuk/beebase-common/internalauth"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
 )
@@ -39,6 +41,19 @@ func NewRouter(
 	r.Get("/health", HealthHandler)
 	r.Get("/ready", ReadyHandler(db))
 	r.With(internalauth.RequireAuth(internalToken)).Get("/internal/api/v1/hives/{id}/exists", existsHandler(db, "hives", true))
+	r.With(internalauth.RequireAuth(internalToken)).Get("/internal/api/v1/hives/{id}/owner", ownerHandler(db))
+	r.With(internalauth.RequireAuth(internalToken)).Delete("/internal/api/v1/users/{userID}", func(w http.ResponseWriter, req *http.Request) {
+		id, err := uuid.Parse(chi.URLParam(req, "userID"))
+		if err != nil {
+			httpx.WriteError(w, 400, "invalid_user_id", "invalid user id")
+			return
+		}
+		if err := hiveHandler.DeleteUserData(req.Context(), id); err != nil {
+			httpx.WriteError(w, 500, "cleanup_failed", "could not delete hive data")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	r.Group(func(r chi.Router) {
 		r.Use(httpmw.RequireAuth(tokenParser))
@@ -67,6 +82,25 @@ func NewRouter(
 	})
 
 	return r
+}
+
+func ownerHandler(db *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var owner uuid.UUID
+		if err = db.QueryRow(r.Context(), `SELECT user_id FROM hives WHERE id=$1`, id).Scan(&owner); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			UserID uuid.UUID `json:"userId"`
+		}{owner})
+	}
 }
 func existsHandler(db *pgxpool.Pool, table string, soft bool) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
