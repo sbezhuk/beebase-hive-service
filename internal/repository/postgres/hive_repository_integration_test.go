@@ -1223,3 +1223,480 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 		t.Fatalf("physical replacement_reason on rolled back Q_B must be NULL, got: %v", *physicalBReason)
 	}
 }
+
+func TestQueenRepository_Integration_InsertRetroactiveAndBeforeOldest(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "Retro Hive", "")
+	if err := hiveRepo.Create(ctx, h); err != nil {
+		t.Fatalf("create hive: %v", err)
+	}
+
+	// 1. Initial chain: A (2025) -> C (2027) with reason X on A
+	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	if err := queenRepo.InsertInChain(ctx, qA, nil); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+
+	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonAC := domainqueen.ReasonNaturalSupersedure
+	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonAC, "C")
+	if err := queenRepo.InsertInChain(ctx, qC, &reasonAC); err != nil {
+		t.Fatalf("insert C: %v", err)
+	}
+
+	// 2. Retroactive insertion of B (2026) between A and C with reason Y
+	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonAB := domainqueen.ReasonLowEggLaying
+	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	if err := queenRepo.InsertInChain(ctx, qB, &reasonAB); err != nil {
+		t.Fatalf("insert B between A and C: %v", err)
+	}
+
+	// In database:
+	// A.removed_at = tB, A.replacement_reason = LOW_EGG_LAYING
+	// B.removed_at = tC, B.replacement_reason = NULL (old reason is NOT transferred)
+	// C.removed_at = NULL, C.replacement_reason = NULL
+	var aRemovedAt *time.Time
+	var aReason, bReason, cReason *string
+	var bRemovedAt, cRemovedAt *time.Time
+
+	if err := tx.QueryRow(ctx, "SELECT removed_at, replacement_reason FROM hive_queens WHERE id = $1", qA.ID).Scan(&aRemovedAt, &aReason); err != nil {
+		t.Fatalf("query A: %v", err)
+	}
+	if aRemovedAt == nil || !aRemovedAt.Equal(tB) || aReason == nil || *aReason != string(domainqueen.ReasonLowEggLaying) {
+		t.Fatalf("unexpected A row: removedAt=%v, reason=%v", aRemovedAt, aReason)
+	}
+
+	if err := tx.QueryRow(ctx, "SELECT removed_at, replacement_reason FROM hive_queens WHERE id = $1", qB.ID).Scan(&bRemovedAt, &bReason); err != nil {
+		t.Fatalf("query B: %v", err)
+	}
+	if bRemovedAt == nil || !bRemovedAt.Equal(tC) || bReason != nil {
+		t.Fatalf("unexpected B row: removedAt=%v, reason=%v (must be null)", bRemovedAt, bReason)
+	}
+
+	if err := tx.QueryRow(ctx, "SELECT removed_at, replacement_reason FROM hive_queens WHERE id = $1", qC.ID).Scan(&cRemovedAt, &cReason); err != nil {
+		t.Fatalf("query C: %v", err)
+	}
+	if cRemovedAt != nil || cReason != nil {
+		t.Fatalf("unexpected C row: removedAt=%v, reason=%v", cRemovedAt, cReason)
+	}
+
+	// 3. Insert before oldest: A0 (2024)
+	tA0 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonA0 := domainqueen.ReasonDiseaseOrPoorQuality
+	qA0 := domainqueen.New(h.ID, 2024, nil, tA0, nil, &reasonA0, "A0")
+	// Supplying reason must fail
+	if err := queenRepo.InsertInChain(ctx, qA0, &reasonA0); !errors.Is(err, domainqueen.ErrReplacementReasonNotAllowed) {
+		t.Fatalf("expected ErrReplacementReasonNotAllowed when inserting before oldest with reason, got: %v", err)
+	}
+
+	// Supplying without reason succeeds: A0.removed_at = tA, A0.replacement_reason = NULL
+	qA0.ReplacementReason = nil
+	if err := queenRepo.InsertInChain(ctx, qA0, nil); err != nil {
+		t.Fatalf("insert A0 before oldest without reason: %v", err)
+	}
+	var a0RemovedAt *time.Time
+	var a0Reason *string
+	if err := tx.QueryRow(ctx, "SELECT removed_at, replacement_reason FROM hive_queens WHERE id = $1", qA0.ID).Scan(&a0RemovedAt, &a0Reason); err != nil {
+		t.Fatalf("query A0: %v", err)
+	}
+	if a0RemovedAt == nil || !a0RemovedAt.Equal(tA) || a0Reason != nil {
+		t.Fatalf("unexpected A0 row: removedAt=%v, reason=%v", a0RemovedAt, a0Reason)
+	}
+}
+
+func TestQueenRepository_Integration_UpdateBoundsAndAtomicity(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "Bounds Hive", "")
+	if err := hiveRepo.Create(ctx, h); err != nil {
+		t.Fatalf("create hive: %v", err)
+	}
+
+	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	_ = queenRepo.InsertInChain(ctx, qA, nil)
+
+	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonAB := domainqueen.ReasonLowEggLaying
+	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	_ = queenRepo.InsertInChain(ctx, qB, &reasonAB)
+
+	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonBC := domainqueen.ReasonAgingAndWear
+	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonBC, "C")
+	_ = queenRepo.InsertInChain(ctx, qC, &reasonBC)
+
+	// 1. Invalid update: B.introducedAt == A.introducedAt -> ErrTimelineInvalid
+	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, 2026, nil, tA, nil, false, "Invalid"); !errors.Is(err, domainqueen.ErrTimelineInvalid) {
+		t.Fatalf("expected ErrTimelineInvalid for B == A, got: %v", err)
+	}
+
+	// 2. Invalid update: B.introducedAt == C.introducedAt -> ErrTimelineInvalid
+	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, 2026, nil, tC, nil, false, "Invalid"); !errors.Is(err, domainqueen.ErrTimelineInvalid) {
+		t.Fatalf("expected ErrTimelineInvalid for B == C, got: %v", err)
+	}
+
+	// 3. Oldest queen A with non-null reason -> ErrReplacementReasonNotAllowed
+	reasonBad := domainqueen.ReasonDiseaseOrPoorQuality
+	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qA.ID, 2025, nil, tA, &reasonBad, true, "Invalid"); !errors.Is(err, domainqueen.ErrReplacementReasonNotAllowed) {
+		t.Fatalf("expected ErrReplacementReasonNotAllowed for oldest queen with reason, got: %v", err)
+	}
+
+	// 4. Valid update: B.introducedAt = 2026-06-01 + reason = BREED_CHANGE_OR_AGGRESSIVENESS
+	newTB := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	newReason := domainqueen.ReasonBreedChangeOrAggressiveness
+	updatedB, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, 2026, nil, newTB, &newReason, true, "Valid update")
+	if err != nil {
+		t.Fatalf("valid update failed: %v", err)
+	}
+	if updatedB.ReplacementReason == nil || *updatedB.ReplacementReason != newReason {
+		t.Fatalf("expected returned incoming reason %s, got: %v", newReason, updatedB.ReplacementReason)
+	}
+
+	// Verify predecessor A has removed_at = newTB and replacement_reason = newReason
+	var aRemovedAt *time.Time
+	var aReason *string
+	if err := tx.QueryRow(ctx, "SELECT removed_at, replacement_reason FROM hive_queens WHERE id = $1", qA.ID).Scan(&aRemovedAt, &aReason); err != nil {
+		t.Fatalf("query A: %v", err)
+	}
+	if aRemovedAt == nil || !aRemovedAt.Equal(newTB) {
+		t.Fatalf("expected A removedAt = %v, got %v", newTB, aRemovedAt)
+	}
+	if aReason == nil || *aReason != string(newReason) {
+		t.Fatalf("expected A reason = %s, got %v", newReason, aReason)
+	}
+}
+
+func TestQueenRepository_Integration_PostgresConstraintsAndRollback(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "Constraints Hive", "")
+	if err := hiveRepo.Create(ctx, h); err != nil {
+		t.Fatalf("create hive: %v", err)
+	}
+
+	tIntro := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	q1 := domainqueen.New(h.ID, 2026, nil, tIntro, nil, nil, "Q1")
+	if err := queenRepo.InsertInChain(ctx, q1, nil); err != nil {
+		t.Fatalf("insert Q1: %v", err)
+	}
+
+	// 1. Duplicate (hive_id, introduced_at) constraint via InsertInChain
+	qDup := domainqueen.New(h.ID, 2026, nil, tIntro, nil, nil, "Q-Dup")
+	if err := queenRepo.InsertInChain(ctx, qDup, nil); !errors.Is(err, domainqueen.ErrDuplicateIntroducedAt) {
+		t.Fatalf("expected ErrDuplicateIntroducedAt, got: %v", err)
+	}
+
+	// 2. Raw SQL check: idx_hive_queens_one_current_per_hive (two active queens)
+	secondID := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, notes)
+		VALUES ($1, $2, 2027, '2027-01-01T00:00:00Z', NULL, 'Second Active')
+	`, secondID, h.ID)
+	if err == nil {
+		t.Fatalf("expected unique constraint violation on idx_hive_queens_one_current_per_hive")
+	}
+
+	// 3. Raw SQL check: chk_hive_queens_active_has_no_replacement_reason
+	// (active queen with removed_at IS NULL cannot have non-null replacement_reason)
+	thirdID := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, replacement_reason, notes)
+		VALUES ($1, $2, 2028, '2028-01-01T00:00:00Z', NULL, 'LOW_EGG_LAYING', 'Invalid Active Reason')
+	`, thirdID, h.ID)
+	if err == nil {
+		t.Fatalf("expected check constraint violation on chk_hive_queens_active_has_no_replacement_reason")
+	}
+
+	// 4. Raw SQL check: chk_hive_queens_replacement_reason_valid
+	fourthID := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, replacement_reason, notes)
+		VALUES ($1, $2, 2029, '2029-01-01T00:00:00Z', '2029-06-01T00:00:00Z', 'INVALID_ENUM_STRING', 'Invalid Reason')
+	`, fourthID, h.ID)
+	if err == nil {
+		t.Fatalf("expected check constraint violation on chk_hive_queens_replacement_reason_valid")
+	}
+
+	// 5. Raw SQL check: FK constraint to non-existent hive
+	nonExistentHive := uuid.New()
+	fifthID := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, notes)
+		VALUES ($1, $2, 2030, '2030-01-01T00:00:00Z', NULL, 'Orphan')
+	`, fifthID, nonExistentHive)
+	if err == nil {
+		t.Fatalf("expected foreign key constraint violation on hive_queens_hive_id_fkey")
+	}
+}
+
+func TestQueenRepository_Integration_DeleteLatest_NonLatestRejectedAndFullRollback(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "Delete Hive", "")
+	if err := hiveRepo.Create(ctx, h); err != nil {
+		t.Fatalf("create hive: %v", err)
+	}
+
+	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	_ = queenRepo.InsertInChain(ctx, qA, nil)
+
+	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonAB := domainqueen.ReasonLowEggLaying
+	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	_ = queenRepo.InsertInChain(ctx, qB, &reasonAB)
+
+	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonBC := domainqueen.ReasonAgingAndWear
+	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonBC, "C")
+	_ = queenRepo.InsertInChain(ctx, qC, &reasonBC)
+
+	// 1. Attempt non-latest delete: DELETE A -> ErrQueenNotLatest
+	if err := queenRepo.DeleteLatest(ctx, h.ID, qA.ID); !errors.Is(err, domainqueen.ErrQueenNotLatest) {
+		t.Fatalf("expected ErrQueenNotLatest for deleting A, got: %v", err)
+	}
+
+	// 2. Attempt non-latest delete: DELETE B -> ErrQueenNotLatest
+	if err := queenRepo.DeleteLatest(ctx, h.ID, qB.ID); !errors.Is(err, domainqueen.ErrQueenNotLatest) {
+		t.Fatalf("expected ErrQueenNotLatest for deleting B, got: %v", err)
+	}
+
+	// 3. DELETE C -> B rolls back to current, A's reason preserved
+	if err := queenRepo.DeleteLatest(ctx, h.ID, qC.ID); err != nil {
+		t.Fatalf("delete C: %v", err)
+	}
+	curB, err := queenRepo.GetCurrentByHiveID(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("get current B: %v", err)
+	}
+	if curB.ID != qB.ID || curB.RemovedAt != nil || curB.ReplacementReason == nil || *curB.ReplacementReason != reasonAB {
+		t.Fatalf("unexpected state for B after C deleted: %+v", curB)
+	}
+
+	// 4. DELETE B -> A rolls back to current, A's reason cleared to NULL
+	if err := queenRepo.DeleteLatest(ctx, h.ID, qB.ID); err != nil {
+		t.Fatalf("delete B: %v", err)
+	}
+	curA, err := queenRepo.GetCurrentByHiveID(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("get current A: %v", err)
+	}
+	if curA.ID != qA.ID || curA.RemovedAt != nil || curA.ReplacementReason != nil {
+		t.Fatalf("unexpected state for A after B deleted: %+v", curA)
+	}
+
+	// 5. DELETE A -> 0 queens in hive
+	if err := queenRepo.DeleteLatest(ctx, h.ID, qA.ID); err != nil {
+		t.Fatalf("delete A: %v", err)
+	}
+	if _, err := queenRepo.GetCurrentByHiveID(ctx, h.ID); !errors.Is(err, domainqueen.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for empty hive, got: %v", err)
+	}
+}
+
+func TestQueenRepository_Integration_ListHistory_LagOrdering(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "History Hive", "")
+	if err := hiveRepo.Create(ctx, h); err != nil {
+		t.Fatalf("create hive: %v", err)
+	}
+
+	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	_ = queenRepo.InsertInChain(ctx, qA, nil)
+
+	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonAB := domainqueen.ReasonLowEggLaying
+	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	_ = queenRepo.InsertInChain(ctx, qB, &reasonAB)
+
+	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	reasonBC := domainqueen.ReasonAgingAndWear
+	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonBC, "C")
+	_ = queenRepo.InsertInChain(ctx, qC, &reasonBC)
+
+	list, err := queenRepo.ListHistoryByHiveID(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 queens, got %d", len(list))
+	}
+
+	// List ordering is newest first: C, B, A
+	if list[0].ID != qC.ID || list[1].ID != qB.ID || list[2].ID != qA.ID {
+		t.Fatalf("expected order [C, B, A], got [%v, %v, %v]", list[0].ID, list[1].ID, list[2].ID)
+	}
+
+	// Incoming reasons via window LAG():
+	// C incoming = reasonBC (from B)
+	if list[0].ReplacementReason == nil || *list[0].ReplacementReason != reasonBC {
+		t.Fatalf("expected C incoming reason = %s, got: %v", reasonBC, list[0].ReplacementReason)
+	}
+	// B incoming = reasonAB (from A)
+	if list[1].ReplacementReason == nil || *list[1].ReplacementReason != reasonAB {
+		t.Fatalf("expected B incoming reason = %s, got: %v", reasonAB, list[1].ReplacementReason)
+	}
+	// A incoming = nil (oldest)
+	if list[2].ReplacementReason != nil {
+		t.Fatalf("expected A incoming reason = nil, got: %v", list[2].ReplacementReason)
+	}
+}
+
+func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	// Advisory locks require non-transactional pool connection to demonstrate cross-transaction concurrency
+	queenRepo := repopostgres.NewQueenRepository(pool)
+	hiveRepo := repopostgres.NewHiveRepository(pool)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+
+	h1 := hive.New(userID, apiaryID, "Concurrent Hive 1", "")
+	if err := hiveRepo.Create(ctx, h1); err != nil {
+		t.Fatalf("create h1: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = hiveRepo.HardDelete(context.Background(), userID, h1.ID)
+	})
+
+	h2 := hive.New(userID, apiaryID, "Concurrent Hive 2", "")
+	if err := hiveRepo.Create(ctx, h2); err != nil {
+		t.Fatalf("create h2: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = hiveRepo.HardDelete(context.Background(), userID, h2.ID)
+	})
+
+	// Initial queens
+	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	q1A := domainqueen.New(h1.ID, 2025, nil, t0, nil, nil, "H1 Initial")
+	if err := queenRepo.InsertInChain(ctx, q1A, nil); err != nil {
+		t.Fatalf("insert q1A: %v", err)
+	}
+
+	q2A := domainqueen.New(h2.ID, 2025, nil, t0, nil, nil, "H2 Initial")
+	if err := queenRepo.InsertInChain(ctx, q2A, nil); err != nil {
+		t.Fatalf("insert q2A: %v", err)
+	}
+
+	// Concurrent mutations across H1 and H2
+	done := make(chan error, 4)
+
+	// Op 1 on H1: Append queen 2026
+	go func() {
+		t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		r := domainqueen.ReasonLowEggLaying
+		q := domainqueen.New(h1.ID, 2026, nil, t1, nil, &r, "H1 Q2")
+		done <- queenRepo.InsertInChain(context.Background(), q, &r)
+	}()
+
+	// Op 2 on H2: Append queen 2026
+	go func() {
+		t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		r := domainqueen.ReasonNaturalSupersedure
+		q := domainqueen.New(h2.ID, 2026, nil, t1, nil, &r, "H2 Q2")
+		done <- queenRepo.InsertInChain(context.Background(), q, &r)
+	}()
+
+	// Op 3 on H1: Append queen 2027
+	go func() {
+		time.Sleep(10 * time.Millisecond) // slight offset to simulate real race
+		t2 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		r := domainqueen.ReasonAgingAndWear
+		q := domainqueen.New(h1.ID, 2027, nil, t2, nil, &r, "H1 Q3")
+		done <- queenRepo.InsertInChain(context.Background(), q, &r)
+	}()
+
+	// Op 4 on H2: Append queen 2027
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		t2 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		r := domainqueen.ReasonBreedChangeOrAggressiveness
+		q := domainqueen.New(h2.ID, 2027, nil, t2, nil, &r, "H2 Q3")
+		done <- queenRepo.InsertInChain(context.Background(), q, &r)
+	}()
+
+	for i := 0; i < 4; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent operation %d failed: %v", i+1, err)
+		}
+	}
+
+	// Verify both hives have exactly 3 queens, ordered cleanly
+	list1, err := queenRepo.ListHistoryByHiveID(ctx, h1.ID)
+	if err != nil || len(list1) != 3 {
+		t.Fatalf("H1 expected 3 queens, got %d (err: %v)", len(list1), err)
+	}
+	list2, err := queenRepo.ListHistoryByHiveID(ctx, h2.ID)
+	if err != nil || len(list2) != 3 {
+		t.Fatalf("H2 expected 3 queens, got %d (err: %v)", len(list2), err)
+	}
+}
