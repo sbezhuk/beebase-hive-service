@@ -12,6 +12,7 @@ import (
 	"github.com/joho/godotenv"
 
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
+	appqueen "github.com/sbezhuk/beebase-hive-service/internal/application/queen"
 	"github.com/sbezhuk/beebase-hive-service/internal/config"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/harvestclient"
@@ -23,6 +24,7 @@ import (
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 	transporthttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
+	queenhttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/queen"
 
 	"github.com/sbezhuk/beebase-common/authmw"
 	"github.com/sbezhuk/beebase-common/logger"
@@ -83,16 +85,20 @@ func run() error {
 	}
 
 	hiveRepo := repopostgres.NewHiveRepository(db)
+	queenRepo := repopostgres.NewQueenRepository(db)
 	apiaryVerifier := apiaryclient.New(cfg.ApiaryServiceURL)
 	inspectionDeleter := inspectionclient.New(cfg.InspectionServiceURL)
 	harvestDeleter := harvestclient.New(cfg.HarvestServiceURL)
 	mediaDeleter := mediaclient.New(cfg.MediaServiceURL)
 	subscriptionClient := subscriptionclient.New(cfg.SubscriptionServiceURL)
 	notifications := notificationclient.New(cfg.NotificationServiceURL, cfg.InternalServiceToken)
-	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient, harvestDeleter, notifications)
+	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient, harvestDeleter, notifications, queenRepo)
 	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notifications)
 
-	router := transporthttp.NewRouter(log, db, hiveHandler, verifier, cfg.InternalServiceToken)
+	queenService := appqueen.NewService(queenRepo, hiveRepo, apiaryVerifier, subscriptionClient)
+	queenHandler := queenhttp.NewHandler(queenService, log)
+
+	router := transporthttp.NewRouter(log, db, hiveHandler, verifier, cfg.InternalServiceToken, queenHandler)
 
 	srv := server.New(server.Config{
 		Addr:         ":" + cfg.HTTPPort,

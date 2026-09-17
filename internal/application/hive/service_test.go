@@ -253,6 +253,17 @@ func (f *fakeRepo) HardDelete(_ context.Context, userID, hiveID uuid.UUID) error
 	return nil
 }
 
+func (f *fakeRepo) DeleteAllByUserHard(_ context.Context, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, h := range f.byID {
+		if h.UserID == userID {
+			delete(f.byID, id)
+		}
+	}
+	return nil
+}
+
 func (f *fakeRepo) ListIDsByUser(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2435,3 +2446,45 @@ func TestApiaryIDsWithHives_NoHivesYieldsEmpty(t *testing.T) {
 		t.Fatalf("ids = %v, want empty", ids)
 	}
 }
+
+func TestDeleteLocalByUser_DeletesOnlyTargetUser(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newService(repo, newFakeApiaryVerifier())
+
+	user1 := uuid.New()
+	user2 := uuid.New()
+	apiary1 := uuid.New()
+	apiary2 := uuid.New()
+
+	mustCreate(t, repo, hive.New(user1, apiary1, "U1-H1", ""))
+	mustCreate(t, repo, hive.New(user1, apiary1, "U1-H2", ""))
+	mustCreate(t, repo, hive.New(user2, apiary2, "U2-H1", ""))
+
+	if err := svc.DeleteLocalByUser(context.Background(), user1); err != nil {
+		t.Fatalf("DeleteLocalByUser: %v", err)
+	}
+
+	// User 1 hives should be gone
+	count1, err := repo.CountByUser(context.Background(), user1)
+	if err != nil {
+		t.Fatalf("CountByUser 1: %v", err)
+	}
+	if count1 != 0 {
+		t.Fatalf("user 1 hives remaining = %d, want 0", count1)
+	}
+
+	// User 2 hives should be untouched
+	count2, err := repo.CountByUser(context.Background(), user2)
+	if err != nil {
+		t.Fatalf("CountByUser 2: %v", err)
+	}
+	if count2 != 1 {
+		t.Fatalf("user 2 hives remaining = %d, want 1", count2)
+	}
+
+	// Idempotent retry: executing again succeeds without error
+	if err := svc.DeleteLocalByUser(context.Background(), user1); err != nil {
+		t.Fatalf("retry DeleteLocalByUser: %v", err)
+	}
+}
+

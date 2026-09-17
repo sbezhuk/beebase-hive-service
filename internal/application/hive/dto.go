@@ -4,6 +4,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
+	"github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
 )
 
 // WithAccess wraps a hive with whether it's currently writable for the
@@ -14,7 +15,8 @@ import (
 // fields directly (h.Name, h.ID, ...) without unwrapping.
 type WithAccess struct {
 	*hive.Hive
-	Writable bool
+	Writable     bool
+	CurrentQueen *queen.Queen
 }
 
 // CreateInput is the input to Service.Create.

@@ -37,6 +37,8 @@ tags:
     description: Liveness and readiness probes.
   - name: hives
     description: Create, read, update, and delete a user's own hives.
+  - name: queens
+    description: Track, mark, and inspect queen history for hives.
 
 security:
   - bearerAuth: []
@@ -304,10 +306,10 @@ paths:
     delete:
       tags: [hives]
       summary: Delete a hive
-      description: Soft delete — the row is retained (deleted_at is set) for future sync support.
+      description: Hard delete after cascading deletion of the hive's inspections, harvests, reminders, and attached media.
       responses:
         "204":
-          description: The hive is deleted (or already was).
+          description: The hive and its descendants are deleted.
         "400":
           description: hiveId is not a valid UUID.
           content:
@@ -401,6 +403,175 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "404":
           description: apiaryID doesn't exist, or belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/hives/{hiveId}/queen:
+    get:
+      tags: [queens]
+      summary: Get the current queen of a hive
+      description: Returns the currently active queen (removed_at is null) for the specified hive.
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Current queen found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueenResponse" }
+        "404":
+          description: Hive or queen not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/hives/{hiveId}/queens:
+    get:
+      tags: [queens]
+      summary: List queen history for a hive
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Queen history returned.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/QueenResponse" }
+        "404":
+          description: Hive not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    post:
+      tags: [queens]
+      summary: Register a new queen for a hive
+      description: >
+        Registers a queen into the hive's strict chronological queen lifecycle chain.
+        Derives lifecycle boundaries automatically and transactionally.
+        If inserted after the current queen, closes the previous queen and becomes the new current queen.
+        If inserted retroactively between existing queens or before the oldest queen, splits the affected neighboring boundaries.
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateQueenRequest" }
+      responses:
+        "201":
+          description: Queen registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueenResponse" }
+        "400":
+          description: Validation error (e.g. year invalid, missing introducedAt).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
+        "409":
+          description: Conflict (e.g. duplicate_introduced_at).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/hives/{hiveId}/queens/{queenId}:
+    get:
+      tags: [queens]
+      summary: Get queen by ID
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: queenId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Queen found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueenResponse" }
+        "404":
+          description: Queen not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    put:
+      tags: [queens]
+      summary: Update queen metadata
+      description: >
+        Updates queen metadata fields (year, markedAt, introducedAt, notes).
+        If introducedAt is modified, the queen must remain strictly between its predecessor and successor in the chain.
+        If boundary is violated, returns 400 with timeline_invalid.
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: queenId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateQueenRequest" }
+      responses:
+        "200":
+          description: Queen updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueenResponse" }
+        "400":
+          description: Validation error (e.g. year invalid, timeline invalid where introducedAt violates chain bounds).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
+        "404":
+          description: Queen not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    delete:
+      tags: [queens]
+      summary: Delete the latest queen in the chain
+      description: >
+        Permanently deletes the latest queen in the chain, rolling back its predecessor to current (removed_at = null).
+        Only the latest queen can be deleted; deleting any non-latest queen returns 409 queen_not_latest.
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: queenId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Queen deleted and chain rolled back.
+        "404":
+          description: Queen not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: Only the latest queen in the chain can be deleted (queen_not_latest).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -506,6 +677,11 @@ components:
             affected by this flag.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        currentQueen:
+          $ref: "#/components/schemas/QueenResponse"
+          description: >
+            The currently active queen for this hive, if any (removed_at is null).
+            Omitted when the hive currently has no active queen.
 
     Pagination:
       type: object
@@ -518,6 +694,43 @@ components:
         totalPages: { type: integer, example: 7 }
         hasNext: { type: boolean }
         hasPrevious: { type: boolean }
+
+    QueenResponse:
+      type: object
+      required: [id, hiveId, year, markingColor, markingColorHex, introducedAt, notes, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        hiveId: { type: string, format: uuid }
+        year: { type: integer, example: 2026 }
+        markingColor: { type: string, enum: [blue, white, yellow, red, green], example: white }
+        markingColorHex: { type: string, example: "#F8F9FA" }
+        markedAt: { type: string, format: date-time, nullable: true }
+        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
+        removedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CreateQueenRequest:
+      type: object
+      required: [year, introducedAt]
+      properties:
+        year: { type: integer, example: 2026 }
+        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
+        markedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string }
+
+    UpdateQueenRequest:
+      type: object
+      required: [year, introducedAt]
+      description: >
+        Update queen metadata and/or timeline position (year, markedAt, introducedAt, notes).
+        Must remain strictly between previous and next neighbor in chain.
+      properties:
+        year: { type: integer, example: 2026 }
+        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
+        markedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string }
 
     ErrorResponse:
       type: object
@@ -544,6 +757,12 @@ components:
                 - hive_name_exists
                 - resource_pro_locked
                 - parent_resource_pro_locked
+                - queen_not_found
+                - invalid_queen_id
+                - active_queen_exists
+                - no_active_queen
+                - queen_not_latest
+                - duplicate_introduced_at
               example: hive_not_found
             message: { type: string, example: hive not found }
 
@@ -581,4 +800,8 @@ components:
                   - invalid_limit
                   - invalid_search
                   - invalid_sort_order
+                  - year_required
+                  - year_invalid
+                  - introduced_at_required
+                  - timeline_invalid
               example: { apiary_id: "apiary_id_invalid" }

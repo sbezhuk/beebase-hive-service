@@ -7,6 +7,7 @@ import (
 
 	"github.com/sbezhuk/beebase-common/medialink"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
+	queenhttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/queen"
 )
 
 // ImageResponse is the public representation of one image attached to a
@@ -33,9 +34,10 @@ type Response struct {
 	// Service.isWritable). Lets Flutter (and inspection-service/
 	// harvest-service) render/enforce locked-resource behavior without
 	// reimplementing this selection themselves.
-	Writable  bool      `json:"writable"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Writable     bool                `json:"writable"`
+	CreatedAt    time.Time           `json:"createdAt"`
+	UpdatedAt    time.Time           `json:"updatedAt"`
+	CurrentQueen *queenhttp.Response `json:"currentQueen,omitempty"`
 }
 
 // newResponse builds a Response for h. Images is read straight from h -
@@ -46,15 +48,21 @@ func newResponse(h *apphive.WithAccess, publicBaseURL string) Response {
 	for i, id := range h.Images {
 		images[i] = ImageResponse{ID: id, ImageURL: medialink.DownloadURL(publicBaseURL, id)}
 	}
+	var currentQueen *queenhttp.Response
+	if h.CurrentQueen != nil {
+		r := queenhttp.NewResponse(h.CurrentQueen)
+		currentQueen = &r
+	}
 	return Response{
-		ID:        h.ID,
-		ApiaryID:  h.ApiaryID,
-		Name:      h.Name,
-		Notes:     h.Notes,
-		Images:    images,
-		Writable:  h.Writable,
-		CreatedAt: h.CreatedAt,
-		UpdatedAt: h.UpdatedAt,
+		ID:           h.ID,
+		ApiaryID:     h.ApiaryID,
+		Name:         h.Name,
+		Notes:        h.Notes,
+		Images:       images,
+		Writable:     h.Writable,
+		CreatedAt:    h.CreatedAt,
+		UpdatedAt:    h.UpdatedAt,
+		CurrentQueen: currentQueen,
 	}
 }
 

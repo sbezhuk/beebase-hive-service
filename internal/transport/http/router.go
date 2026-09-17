@@ -17,6 +17,7 @@ import (
 	"github.com/sbezhuk/beebase-common/httpx"
 	"github.com/sbezhuk/beebase-common/internalauth"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
+	queenhttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/queen"
 )
 
 // NewRouter builds the root HTTP handler for the service.
@@ -25,11 +26,17 @@ func NewRouter(
 	db *pgxpool.Pool,
 	hiveHandler *hivehttp.Handler,
 	tokenParser httpmw.AccessTokenParser,
-	internalTokens ...string,
+	extras ...any,
 ) http.Handler {
 	internalToken := ""
-	if len(internalTokens) > 0 {
-		internalToken = internalTokens[0]
+	var queenHandler *queenhttp.Handler
+	for _, extra := range extras {
+		switch v := extra.(type) {
+		case string:
+			internalToken = v
+		case *queenhttp.Handler:
+			queenHandler = v
+		}
 	}
 	r := chi.NewRouter()
 
@@ -76,6 +83,17 @@ func NewRouter(
 			// end-user call - beebase-gateway is what actually blocks external
 			// reachability, by never proxying this exact method+path.
 			r.Delete("/", hiveHandler.DeleteByApiary)
+
+			if queenHandler != nil {
+				r.Get("/{hiveId}/queen", queenHandler.GetCurrent)
+				r.Route("/{hiveId}/queens", func(r chi.Router) {
+					r.Get("/", queenHandler.ListHistory)
+					r.Post("/", queenHandler.Create)
+					r.Get("/{queenId}", queenHandler.GetByID)
+					r.Put("/{queenId}", queenHandler.Update)
+					r.Delete("/{queenId}", queenHandler.Delete)
+				})
+			}
 		})
 
 		r.Get("/api/v1/apiaries/{apiaryId}/hives", hiveHandler.ListByApiary)

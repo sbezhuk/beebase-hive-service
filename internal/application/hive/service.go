@@ -15,6 +15,7 @@ import (
 	"github.com/sbezhuk/beebase-common/inspectionwarning"
 	"github.com/sbezhuk/beebase-common/pagination"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
+	"github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
 )
 
 // Service implements the hive use cases. Every method takes the
@@ -30,6 +31,7 @@ type Service struct {
 	subscriptions    EntitlementResolver
 	harvests         HarvestDeleter
 	reminders        EntityCleanup
+	queens           QueenProvider
 }
 
 // NewService constructs a Service.
@@ -41,6 +43,8 @@ func NewService(hives hive.Repository, apiaries ApiaryVerifier, inspections Insp
 			s.harvests = v
 		case EntityCleanup:
 			s.reminders = v
+		case QueenProvider:
+			s.queens = v
 		}
 	}
 	return s
@@ -137,7 +141,14 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID, accessToken string,
 		return nil, err
 	}
 
-	return &WithAccess{Hive: h, Writable: writable}, nil
+	var currentQueen *queen.Queen
+	if s.queens != nil {
+		if q, err := s.queens.GetCurrentByHiveID(ctx, hiveID); err == nil {
+			currentQueen = q
+		}
+	}
+
+	return &WithAccess{Hive: h, Writable: writable, CurrentQueen: currentQueen}, nil
 }
 
 // resolveWritable reports whether h is currently writable for the caller:

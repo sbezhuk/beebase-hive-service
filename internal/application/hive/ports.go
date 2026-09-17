@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
 )
 
 // ApiaryVerifier confirms that an apiary belongs to whoever presented
@@ -43,6 +45,11 @@ type HarvestDeleter interface {
 
 type EntityCleanup interface {
 	Cleanup(ctx context.Context, entityType string, entityID uuid.UUID) error
+}
+
+// QueenProvider provides the currently active queen for a hive, if any.
+type QueenProvider interface {
+	GetCurrentByHiveID(ctx context.Context, hiveID uuid.UUID) (*queen.Queen, error)
 }
 
 // MediaClient is hive-service's dependency on media-service. media-service
