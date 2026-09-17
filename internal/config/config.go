@@ -4,7 +4,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -123,8 +125,23 @@ func Load() (*Config, error) {
 	if cfg.SubscriptionServiceURL == "" {
 		return nil, fmt.Errorf("config: SUBSCRIPTION_SERVICE_URL is required")
 	}
+	if err := validateHTTPURL("NOTIFICATION_SERVICE_URL", cfg.NotificationServiceURL); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
+}
+
+func validateHTTPURL(key, raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("config: %s is required", key)
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("config: %s must be a valid HTTP or HTTPS URL", key)
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {
