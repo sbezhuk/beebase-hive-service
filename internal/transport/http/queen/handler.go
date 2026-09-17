@@ -61,11 +61,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var replacementReason *domainqueen.ReplacementReason
+	if req.ReplacementReason != nil {
+		r := domainqueen.ReplacementReason(*req.ReplacementReason)
+		replacementReason = &r
+	}
+
 	created, err := h.service.Create(r.Context(), userID, token, hiveID, appqueen.CreateInput{
-		Year:         req.Year,
-		MarkedAt:     req.MarkedAt,
-		IntroducedAt: *req.IntroducedAt,
-		Notes:        req.Notes,
+		Year:              req.Year,
+		MarkedAt:          req.MarkedAt,
+		IntroducedAt:      *req.IntroducedAt,
+		ReplacementReason: replacementReason,
+		Notes:             req.Notes,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -165,11 +172,19 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var replacementReason *domainqueen.ReplacementReason
+	if req.ReplacementReason != nil {
+		r := domainqueen.ReplacementReason(*req.ReplacementReason)
+		replacementReason = &r
+	}
+
 	updated, err := h.service.Update(r.Context(), userID, token, hiveID, queenID, appqueen.UpdateInput{
-		Year:         req.Year,
-		MarkedAt:     req.MarkedAt,
-		IntroducedAt: *req.IntroducedAt,
-		Notes:        req.Notes,
+		Year:                 req.Year,
+		MarkedAt:             req.MarkedAt,
+		IntroducedAt:         *req.IntroducedAt,
+		ReplacementReason:    replacementReason,
+		HasReplacementReason: req.HasReplacementReason,
+		Notes:                req.Notes,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -260,6 +275,10 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeIntroducedAtRequired})
 	case errors.Is(err, appqueen.ErrTimelineInvalid):
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeTimelineInvalid})
+	case errors.Is(err, appqueen.ErrReplacementReasonInvalid):
+		httpx.WriteValidationError(w, map[string]string{"replacementReason": CodeReplacementReasonInvalid})
+	case errors.Is(err, appqueen.ErrReplacementReasonNotAllowed):
+		httpx.WriteValidationError(w, map[string]string{"replacementReason": CodeReplacementReasonNotAllowed})
 	case errors.Is(err, apphive.ErrReadOnly):
 		httpx.WriteError(w, http.StatusForbidden, CodeResourceProLocked, "this hive requires Pro to edit")
 	case errors.Is(err, apphive.ErrParentReadOnly):

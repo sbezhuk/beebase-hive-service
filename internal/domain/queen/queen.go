@@ -62,32 +62,61 @@ func ColorForYear(year int) ColorInfo {
 	}
 }
 
+// ReplacementReason represents the reason why a queen's lifecycle in a hive ended.
+type ReplacementReason string
+
+const (
+	ReasonAgingAndWear                ReplacementReason = "AGING_AND_WEAR"
+	ReasonLowEggLaying                ReplacementReason = "LOW_EGG_LAYING"
+	ReasonInjuryOrMutilation          ReplacementReason = "INJURY_OR_MUTILATION"
+	ReasonDiseaseOrPoorQuality        ReplacementReason = "DISEASE_OR_POOR_QUALITY"
+	ReasonNaturalSupersedure          ReplacementReason = "NATURAL_SUPERSEDURE"
+	ReasonBreedChangeOrAggressiveness ReplacementReason = "BREED_CHANGE_OR_AGGRESSIVENESS"
+)
+
+// IsValid reports whether r is one of the allowed queen replacement reasons.
+func (r ReplacementReason) IsValid() bool {
+	switch r {
+	case ReasonAgingAndWear,
+		ReasonLowEggLaying,
+		ReasonInjuryOrMutilation,
+		ReasonDiseaseOrPoorQuality,
+		ReasonNaturalSupersedure,
+		ReasonBreedChangeOrAggressiveness:
+		return true
+	default:
+		return false
+	}
+}
+
 // Queen represents a queen bee associated with a specific hive.
 type Queen struct {
-	ID           uuid.UUID
-	HiveID       uuid.UUID
-	Year         int
-	MarkedAt     *time.Time
-	IntroducedAt time.Time
-	RemovedAt    *time.Time
-	Notes        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                uuid.UUID
+	HiveID            uuid.UUID
+	Year              int
+	MarkedAt          *time.Time
+	IntroducedAt      time.Time
+	RemovedAt         *time.Time
+	ReplacementReason *ReplacementReason
+	Notes             string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // New constructs a Queen with a freshly generated ID and timestamps set to now.
-func New(hiveID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, removedAt *time.Time, notes string) *Queen {
+func New(hiveID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, removedAt *time.Time, replacementReason *ReplacementReason, notes string) *Queen {
 	now := time.Now().UTC()
 	return &Queen{
-		ID:           uuid.New(),
-		HiveID:       hiveID,
-		Year:         year,
-		MarkedAt:     markedAt,
-		IntroducedAt: introducedAt,
-		RemovedAt:    removedAt,
-		Notes:        notes,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                uuid.New(),
+		HiveID:            hiveID,
+		Year:              year,
+		MarkedAt:          markedAt,
+		IntroducedAt:      introducedAt,
+		RemovedAt:         removedAt,
+		ReplacementReason: replacementReason,
+		Notes:             notes,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 }
 

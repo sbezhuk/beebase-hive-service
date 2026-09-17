@@ -33,7 +33,7 @@ func NewQueenRepository(pool Transactor) *QueenRepository {
 	}
 }
 
-func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) error {
+func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen, predecessorReason *queen.ReplacementReason) error {
 	if r.pool == nil {
 		return fmt.Errorf("postgres: transactor pool not configured")
 	}
@@ -52,7 +52,7 @@ func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) err
 
 	// Fetch existing queens for this hive ordered by introduced_at ASC
 	const fetchSql = `
-		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at
+		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, replacement_reason, notes, created_at, updated_at
 		FROM hive_queens
 		WHERE hive_id = $1
 		ORDER BY introduced_at ASC
@@ -73,6 +73,7 @@ func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) err
 			&item.MarkedAt,
 			&item.IntroducedAt,
 			&item.RemovedAt,
+			&item.ReplacementReason,
 			&item.Notes,
 			&item.CreatedAt,
 			&item.UpdatedAt,
@@ -94,24 +95,36 @@ func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) err
 
 	n := len(existing)
 	if n == 0 {
+		// First queen in hive: cannot have a predecessor, so replacement reason is not allowed
+		if predecessorReason != nil {
+			return queen.ErrReplacementReasonNotAllowed
+		}
 		// First queen in hive: becomes current
 		q.RemovedAt = nil
+		q.ReplacementReason = nil
 	} else if q.IntroducedAt.After(existing[n-1].IntroducedAt) {
 		// Appending newer queen: previous latest queen becomes historical ending at q.IntroducedAt
 		prev := existing[n-1]
 		const updatePrevSql = `
 			UPDATE hive_queens
-			SET removed_at = $1, updated_at = now()
-			WHERE id = $2
+			SET removed_at = $1, replacement_reason = $2, updated_at = now()
+			WHERE id = $3
 		`
-		if _, err := tx.Exec(ctx, updatePrevSql, q.IntroducedAt, prev.ID); err != nil {
-			return fmt.Errorf("postgres: update previous queen removed_at: %w", err)
+		if _, err := tx.Exec(ctx, updatePrevSql, q.IntroducedAt, predecessorReason, prev.ID); err != nil {
+			return fmt.Errorf("postgres: update previous queen removed_at and reason: %w", err)
 		}
 		q.RemovedAt = nil
+		// The new queen's incoming transition reason is predecessorReason
+		q.ReplacementReason = predecessorReason
 	} else if q.IntroducedAt.Before(existing[0].IntroducedAt) {
+		// Inserting before the oldest queen: no predecessor exists, so replacement reason is not allowed
+		if predecessorReason != nil {
+			return queen.ErrReplacementReasonNotAllowed
+		}
 		// Inserting before the oldest queen: new queen ends where the old oldest began
 		successorIntro := existing[0].IntroducedAt
 		q.RemovedAt = &successorIntro
+		q.ReplacementReason = nil
 	} else {
 		// Inserting between two existing queens: find predecessor and successor
 		var prev, next *queen.Queen
@@ -126,23 +139,27 @@ func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) err
 			return fmt.Errorf("postgres: failed to find neighbor interval for insertion")
 		}
 
-		// Update predecessor's removed_at to q.IntroducedAt
+		// Update predecessor's removed_at to q.IntroducedAt and replacement_reason to predecessorReason
 		const updatePrevSql = `
 			UPDATE hive_queens
-			SET removed_at = $1, updated_at = now()
-			WHERE id = $2
+			SET removed_at = $1, replacement_reason = $2, updated_at = now()
+			WHERE id = $3
 		`
-		if _, err := tx.Exec(ctx, updatePrevSql, q.IntroducedAt, prev.ID); err != nil {
-			return fmt.Errorf("postgres: update predecessor removed_at: %w", err)
+		if _, err := tx.Exec(ctx, updatePrevSql, q.IntroducedAt, predecessorReason, prev.ID); err != nil {
+			return fmt.Errorf("postgres: update predecessor removed_at and reason: %w", err)
 		}
 		successorIntro := next.IntroducedAt
 		q.RemovedAt = &successorIntro
+		// The newly inserted queen's incoming reason is predecessorReason
+		q.ReplacementReason = predecessorReason
 	}
 
 	const insertSql = `
-		INSERT INTO hive_queens (id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO hive_queens (id, hive_id, year, marked_at, introduced_at, removed_at, replacement_reason, notes, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`
+	// In database, the newly inserted queen's row stores replacement_reason = NULL
+	// (because it hasn't been replaced yet, or old transition reason does not carry forward)
 	_, err = tx.Exec(ctx, insertSql,
 		q.ID,
 		q.HiveID,
@@ -150,6 +167,7 @@ func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) err
 		q.MarkedAt,
 		q.IntroducedAt,
 		q.RemovedAt,
+		nil,
 		q.Notes,
 		q.CreatedAt,
 		q.UpdatedAt,
@@ -172,7 +190,7 @@ func (r *QueenRepository) InsertInChain(ctx context.Context, q *queen.Queen) err
 	return nil
 }
 
-func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, notes string) (*queen.Queen, error) {
+func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, replacementReason *queen.ReplacementReason, hasReplacementReason bool, notes string) (*queen.Queen, error) {
 	if r.pool == nil {
 		return nil, fmt.Errorf("postgres: transactor pool not configured")
 	}
@@ -189,7 +207,7 @@ func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uui
 	}
 
 	const fetchSql = `
-		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at
+		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, replacement_reason, notes, created_at, updated_at
 		FROM hive_queens
 		WHERE hive_id = $1
 		ORDER BY introduced_at ASC
@@ -211,6 +229,7 @@ func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uui
 			&item.MarkedAt,
 			&item.IntroducedAt,
 			&item.RemovedAt,
+			&item.ReplacementReason,
 			&item.Notes,
 			&item.CreatedAt,
 			&item.UpdatedAt,
@@ -230,6 +249,12 @@ func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uui
 		return nil, queen.ErrNotFound
 	}
 
+	// If oldest queen in chain, it has no predecessor / incoming transition.
+	// Supplying a non-null replacementReason is not allowed.
+	if targetIdx == 0 && hasReplacementReason && replacementReason != nil {
+		return nil, queen.ErrReplacementReasonNotAllowed
+	}
+
 	// Neighbor bound check:
 	// If predecessor exists: introducedAt must be strictly greater than predecessor.IntroducedAt
 	if targetIdx > 0 {
@@ -246,19 +271,36 @@ func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uui
 		}
 	}
 
-	// If predecessor exists and introducedAt changed, update predecessor's removed_at
-	if targetIdx > 0 && !existing[targetIdx].IntroducedAt.Equal(introducedAt) {
+	// If predecessor exists, update its removed_at (if introducedAt changed) and/or replacement_reason (if hasReplacementReason)
+	var finalIncomingReason *queen.ReplacementReason
+	if targetIdx > 0 {
 		prev := existing[targetIdx-1]
-		const updatePrevSql = `
-			UPDATE hive_queens
-			SET removed_at = $1, updated_at = now()
-			WHERE id = $2
-		`
-		if _, err := tx.Exec(ctx, updatePrevSql, introducedAt, prev.ID); err != nil {
-			return nil, fmt.Errorf("postgres: update predecessor removed_at on edit: %w", err)
+		finalIncomingReason = prev.ReplacementReason
+		needsPrevUpdate := false
+		newPrevRemovedAt := prev.RemovedAt
+		if !existing[targetIdx].IntroducedAt.Equal(introducedAt) {
+			newPrevRemovedAt = &introducedAt
+			needsPrevUpdate = true
+		}
+		newPrevReason := prev.ReplacementReason
+		if hasReplacementReason {
+			newPrevReason = replacementReason
+			finalIncomingReason = replacementReason
+			needsPrevUpdate = true
+		}
+		if needsPrevUpdate {
+			const updatePrevSql = `
+				UPDATE hive_queens
+				SET removed_at = $1, replacement_reason = $2, updated_at = now()
+				WHERE id = $3
+			`
+			if _, err := tx.Exec(ctx, updatePrevSql, newPrevRemovedAt, newPrevReason, prev.ID); err != nil {
+				return nil, fmt.Errorf("postgres: update predecessor on edit: %w", err)
+			}
 		}
 	}
 
+	// Update the target queen's own record (its own physical replacement_reason is NOT changed, as that belongs to successor)
 	const updateSql = `
 		UPDATE hive_queens
 		SET year = $1, marked_at = $2, introduced_at = $3, notes = $4, updated_at = now()
@@ -292,6 +334,9 @@ func (r *QueenRepository) UpdateInChain(ctx context.Context, hiveID, queenID uui
 		return nil, fmt.Errorf("postgres: update queen in chain: %w", err)
 	}
 
+	// Populate incoming replacement reason
+	updated.ReplacementReason = finalIncomingReason
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("postgres: commit update in chain: %w", err)
 	}
@@ -317,7 +362,7 @@ func (r *QueenRepository) DeleteLatest(ctx context.Context, hiveID, queenID uuid
 
 	// Fetch all queens ordered newest first
 	const fetchSql = `
-		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at
+		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, replacement_reason, notes, created_at, updated_at
 		FROM hive_queens
 		WHERE hive_id = $1
 		ORDER BY introduced_at DESC
@@ -339,6 +384,7 @@ func (r *QueenRepository) DeleteLatest(ctx context.Context, hiveID, queenID uuid
 			&item.MarkedAt,
 			&item.IntroducedAt,
 			&item.RemovedAt,
+			&item.ReplacementReason,
 			&item.Notes,
 			&item.CreatedAt,
 			&item.UpdatedAt,
@@ -369,12 +415,12 @@ func (r *QueenRepository) DeleteLatest(ctx context.Context, hiveID, queenID uuid
 		return fmt.Errorf("postgres: execute delete queen: %w", err)
 	}
 
-	// If a predecessor exists, roll it back to current (removed_at = NULL)
+	// If a predecessor exists, roll it back to current (removed_at = NULL, replacement_reason = NULL)
 	if len(existing) > 1 {
 		prev := existing[1]
 		const updatePrevSql = `
 			UPDATE hive_queens
-			SET removed_at = NULL, updated_at = now()
+			SET removed_at = NULL, replacement_reason = NULL, updated_at = now()
 			WHERE id = $1
 		`
 		if _, err := tx.Exec(ctx, updatePrevSql, prev.ID); err != nil {
@@ -391,9 +437,16 @@ func (r *QueenRepository) DeleteLatest(ctx context.Context, hiveID, queenID uuid
 
 func (r *QueenRepository) GetCurrentByHiveID(ctx context.Context, hiveID uuid.UUID) (*queen.Queen, error) {
 	const sql = `
-		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at
-		FROM hive_queens
-		WHERE hive_id = $1 AND removed_at IS NULL
+		WITH chain AS (
+			SELECT id, hive_id, year, marked_at, introduced_at, removed_at,
+			       LAG(replacement_reason) OVER (PARTITION BY hive_id ORDER BY introduced_at ASC) AS incoming_replacement_reason,
+			       notes, created_at, updated_at
+			FROM hive_queens
+			WHERE hive_id = $1
+		)
+		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, incoming_replacement_reason, notes, created_at, updated_at
+		FROM chain
+		WHERE removed_at IS NULL
 		LIMIT 1
 	`
 	var q queen.Queen
@@ -404,6 +457,7 @@ func (r *QueenRepository) GetCurrentByHiveID(ctx context.Context, hiveID uuid.UU
 		&q.MarkedAt,
 		&q.IntroducedAt,
 		&q.RemovedAt,
+		&q.ReplacementReason,
 		&q.Notes,
 		&q.CreatedAt,
 		&q.UpdatedAt,
@@ -419,9 +473,16 @@ func (r *QueenRepository) GetCurrentByHiveID(ctx context.Context, hiveID uuid.UU
 
 func (r *QueenRepository) GetByID(ctx context.Context, hiveID, queenID uuid.UUID) (*queen.Queen, error) {
 	const sql = `
-		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at
-		FROM hive_queens
-		WHERE hive_id = $1 AND id = $2
+		WITH chain AS (
+			SELECT id, hive_id, year, marked_at, introduced_at, removed_at,
+			       LAG(replacement_reason) OVER (PARTITION BY hive_id ORDER BY introduced_at ASC) AS incoming_replacement_reason,
+			       notes, created_at, updated_at
+			FROM hive_queens
+			WHERE hive_id = $1
+		)
+		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, incoming_replacement_reason, notes, created_at, updated_at
+		FROM chain
+		WHERE id = $2
 	`
 	var q queen.Queen
 	err := r.db.QueryRow(ctx, sql, hiveID, queenID).Scan(
@@ -431,6 +492,7 @@ func (r *QueenRepository) GetByID(ctx context.Context, hiveID, queenID uuid.UUID
 		&q.MarkedAt,
 		&q.IntroducedAt,
 		&q.RemovedAt,
+		&q.ReplacementReason,
 		&q.Notes,
 		&q.CreatedAt,
 		&q.UpdatedAt,
@@ -446,7 +508,9 @@ func (r *QueenRepository) GetByID(ctx context.Context, hiveID, queenID uuid.UUID
 
 func (r *QueenRepository) ListHistoryByHiveID(ctx context.Context, hiveID uuid.UUID) ([]*queen.Queen, error) {
 	const sql = `
-		SELECT id, hive_id, year, marked_at, introduced_at, removed_at, notes, created_at, updated_at
+		SELECT id, hive_id, year, marked_at, introduced_at, removed_at,
+		       LAG(replacement_reason) OVER (PARTITION BY hive_id ORDER BY introduced_at ASC) AS incoming_replacement_reason,
+		       notes, created_at, updated_at
 		FROM hive_queens
 		WHERE hive_id = $1
 		ORDER BY introduced_at DESC, created_at DESC
@@ -467,6 +531,7 @@ func (r *QueenRepository) ListHistoryByHiveID(ctx context.Context, hiveID uuid.U
 			&q.MarkedAt,
 			&q.IntroducedAt,
 			&q.RemovedAt,
+			&q.ReplacementReason,
 			&q.Notes,
 			&q.CreatedAt,
 			&q.UpdatedAt,

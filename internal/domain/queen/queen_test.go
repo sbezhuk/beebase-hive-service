@@ -71,7 +71,7 @@ func TestColorForYear_CycleAcrossDecades(t *testing.T) {
 func TestQueen_Methods(t *testing.T) {
 	hiveID := uuid.New()
 	now := time.Now().UTC()
-	q := queen.New(hiveID, 2026, &now, now, nil, "Strong layer")
+	q := queen.New(hiveID, 2026, &now, now, nil, nil, "Strong layer")
 
 	if !q.IsCurrent() {
 		t.Errorf("New queen should be current (RemovedAt is nil)")
@@ -97,5 +97,36 @@ func TestQueen_Methods(t *testing.T) {
 	q.RemovedAt = &removed
 	if q.IsCurrent() {
 		t.Errorf("Queen with RemovedAt should not be current")
+	}
+}
+
+func TestReplacementReason_IsValid(t *testing.T) {
+	validReasons := []queen.ReplacementReason{
+		queen.ReasonAgingAndWear,
+		queen.ReasonLowEggLaying,
+		queen.ReasonInjuryOrMutilation,
+		queen.ReasonDiseaseOrPoorQuality,
+		queen.ReasonNaturalSupersedure,
+		queen.ReasonBreedChangeOrAggressiveness,
+	}
+
+	for _, r := range validReasons {
+		if !r.IsValid() {
+			t.Errorf("expected %q to be valid", r)
+		}
+	}
+
+	invalidReasons := []queen.ReplacementReason{
+		"",
+		"aging_and_wear",
+		"UNKNOWN",
+		"SWARMING",
+		"OTHER",
+	}
+
+	for _, r := range invalidReasons {
+		if r.IsValid() {
+			t.Errorf("expected %q to be invalid", r)
+		}
 	}
 }

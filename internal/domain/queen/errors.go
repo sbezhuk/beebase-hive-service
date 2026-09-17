@@ -22,5 +22,11 @@ var (
 
 	// ErrTimelineInvalid is returned when introduced_at violates chain timeline bounds.
 	ErrTimelineInvalid = errors.New("introduced_at violates chain timeline bounds")
+
+	// ErrReplacementReasonInvalid is returned when an unrecognized replacement reason enum is provided.
+	ErrReplacementReasonInvalid = errors.New("invalid replacement reason")
+
+	// ErrReplacementReasonNotAllowed is returned when a replacement reason is supplied in a context where it is forbidden.
+	ErrReplacementReasonNotAllowed = errors.New("replacement reason is not allowed")
 )
 

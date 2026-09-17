@@ -514,9 +514,10 @@ paths:
       tags: [queens]
       summary: Update queen metadata
       description: >
-        Updates queen metadata fields (year, markedAt, introducedAt, notes).
+        Updates queen metadata fields (year, markedAt, introducedAt, replacementReason, notes).
         If introducedAt is modified, the queen must remain strictly between its predecessor and successor in the chain.
         If boundary is violated, returns 400 with timeline_invalid.
+        replacementReason modifies the incoming transition reason (stored on its predecessor); allowed on any non-oldest queen.
       parameters:
         - name: hiveId
           in: path
@@ -538,7 +539,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/QueenResponse" }
         "400":
-          description: Validation error (e.g. year invalid, timeline invalid where introducedAt violates chain bounds).
+          description: Validation error (e.g. year invalid, timeline invalid where introducedAt violates chain bounds, or replacement reason not allowed on oldest queen).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
@@ -551,7 +552,7 @@ paths:
       tags: [queens]
       summary: Delete the latest queen in the chain
       description: >
-        Permanently deletes the latest queen in the chain, rolling back its predecessor to current (removed_at = null).
+        Permanently deletes the latest queen in the chain, rolling back its predecessor to current (removed_at = null, replacement_reason = null).
         Only the latest queen can be deleted; deleting any non-latest queen returns 409 queen_not_latest.
       parameters:
         - name: hiveId
@@ -707,6 +708,20 @@ components:
         markedAt: { type: string, format: date-time, nullable: true }
         introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
         removedAt: { type: string, format: date-time, nullable: true }
+        replacementReason:
+          type: string
+          nullable: true
+          enum:
+            - AGING_AND_WEAR
+            - LOW_EGG_LAYING
+            - INJURY_OR_MUTILATION
+            - DISEASE_OR_POOR_QUALITY
+            - NATURAL_SUPERSEDURE
+            - BREED_CHANGE_OR_AGGRESSIVENESS
+          example: LOW_EGG_LAYING
+          description: >
+            Incoming transition reason describing why the predecessor queen's lifecycle ended.
+            Null for the oldest queen in the chain or when no replacement reason was provided.
         notes: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
@@ -718,18 +733,49 @@ components:
         year: { type: integer, example: 2026 }
         introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
         markedAt: { type: string, format: date-time, nullable: true }
+        replacementReason:
+          type: string
+          nullable: true
+          enum:
+            - AGING_AND_WEAR
+            - LOW_EGG_LAYING
+            - INJURY_OR_MUTILATION
+            - DISEASE_OR_POOR_QUALITY
+            - NATURAL_SUPERSEDURE
+            - BREED_CHANGE_OR_AGGRESSIVENESS
+          example: LOW_EGG_LAYING
+          description: >
+            Reason why the previous queen's lifecycle ended (incoming transition to this queen).
+            Applies to the immediate chronological predecessor, not this queen.
+            Forbidden when creating the first queen or inserting before the oldest queen.
         notes: { type: string }
 
     UpdateQueenRequest:
       type: object
       required: [year, introducedAt]
       description: >
-        Update queen metadata and/or timeline position (year, markedAt, introducedAt, notes).
+        Update queen metadata and/or timeline position (year, markedAt, introducedAt, replacementReason, notes).
         Must remain strictly between previous and next neighbor in chain.
       properties:
         year: { type: integer, example: 2026 }
         introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
         markedAt: { type: string, format: date-time, nullable: true }
+        replacementReason:
+          type: string
+          nullable: true
+          enum:
+            - AGING_AND_WEAR
+            - LOW_EGG_LAYING
+            - INJURY_OR_MUTILATION
+            - DISEASE_OR_POOR_QUALITY
+            - NATURAL_SUPERSEDURE
+            - BREED_CHANGE_OR_AGGRESSIVENESS
+          example: LOW_EGG_LAYING
+          description: >
+            Reason for the incoming transition from the predecessor queen to this queen.
+            Stored physically on the immediate predecessor. Allowed on any non-oldest queen
+            (including the active/current queen). Forbidden on the oldest queen in the chain.
+            Omission preserves the existing reason; explicit null clears it.
         notes: { type: string }
 
     ErrorResponse:
@@ -804,4 +850,6 @@ components:
                   - year_invalid
                   - introduced_at_required
                   - timeline_invalid
+                  - replacement_reason_invalid
+                  - replacement_reason_not_allowed
               example: { apiary_id: "apiary_id_invalid" }

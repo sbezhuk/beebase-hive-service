@@ -21,6 +21,8 @@ import (
 	appqueen "github.com/sbezhuk/beebase-hive-service/internal/application/queen"
 	domainhive "github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 	domainqueen "github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
+	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
+	"github.com/sbezhuk/beebase-common/pagination"
 	queenhttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/queen"
 )
 
@@ -46,6 +48,41 @@ func (r *fakeHiveRepo) WritableIDs(ctx context.Context, userID uuid.UUID, limit 
 	return ids, nil
 }
 
+func (r *fakeHiveRepo) Create(ctx context.Context, h *domainhive.Hive) error {
+	r.hives[h.ID] = h
+	return nil
+}
+func (r *fakeHiveRepo) CreateWithLimit(ctx context.Context, h *domainhive.Hive, maxCount int) error {
+	r.hives[h.ID] = h
+	return nil
+}
+func (r *fakeHiveRepo) CountByUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	return len(r.hives), nil
+}
+func (r *fakeHiveRepo) ListByUser(ctx context.Context, userID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*domainhive.Hive, int, error) {
+	return nil, 0, nil
+}
+func (r *fakeHiveRepo) ListByApiary(ctx context.Context, userID, apiaryID uuid.UUID, p pagination.Params, search, sortOrder *string, needsInspectionOnly bool, needsInspectionHiveIDs []uuid.UUID) ([]*domainhive.Hive, int, error) {
+	return nil, 0, nil
+}
+func (r *fakeHiveRepo) Update(ctx context.Context, h *domainhive.Hive) error {
+	r.hives[h.ID] = h
+	return nil
+}
+func (r *fakeHiveRepo) ListIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (r *fakeHiveRepo) DistinctApiaryIDsWithHives(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (r *fakeHiveRepo) ListAllByApiary(ctx context.Context, userID, apiaryID uuid.UUID) ([]*domainhive.Hive, error) {
+	return nil, nil
+}
+func (r *fakeHiveRepo) HardDelete(ctx context.Context, userID, hiveID uuid.UUID) error {
+	delete(r.hives, hiveID)
+	return nil
+}
+
 type fakeQueenRepo struct {
 	queens map[uuid.UUID]*domainqueen.Queen
 }
@@ -67,7 +104,23 @@ func (r *fakeQueenRepo) getOrdered(hiveID uuid.UUID) []*domainqueen.Queen {
 	return list
 }
 
-func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen) error {
+func (r *fakeQueenRepo) withIncomingReason(q *domainqueen.Queen) *domainqueen.Queen {
+	existing := r.getOrdered(q.HiveID)
+	var incomingReason *domainqueen.ReplacementReason
+	for i, item := range existing {
+		if item.ID == q.ID {
+			if i > 0 {
+				incomingReason = existing[i-1].ReplacementReason
+			}
+			break
+		}
+	}
+	clone := *q
+	clone.ReplacementReason = incomingReason
+	return &clone
+}
+
+func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen, predecessorReason *domainqueen.ReplacementReason) error {
 	existing := r.getOrdered(q.HiveID)
 	for _, ex := range existing {
 		if ex.IntroducedAt.Equal(q.IntroducedAt) {
@@ -77,15 +130,25 @@ func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen)
 
 	n := len(existing)
 	if n == 0 {
+		if predecessorReason != nil {
+			return domainqueen.ErrReplacementReasonNotAllowed
+		}
 		q.RemovedAt = nil
+		q.ReplacementReason = nil
 	} else if q.IntroducedAt.After(existing[n-1].IntroducedAt) {
 		prev := existing[n-1]
 		intro := q.IntroducedAt
 		prev.RemovedAt = &intro
+		prev.ReplacementReason = predecessorReason
 		q.RemovedAt = nil
+		q.ReplacementReason = predecessorReason
 	} else if q.IntroducedAt.Before(existing[0].IntroducedAt) {
+		if predecessorReason != nil {
+			return domainqueen.ErrReplacementReasonNotAllowed
+		}
 		succIntro := existing[0].IntroducedAt
 		q.RemovedAt = &succIntro
+		q.ReplacementReason = nil
 	} else {
 		var prev, next *domainqueen.Queen
 		for i := 0; i < n-1; i++ {
@@ -100,18 +163,22 @@ func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen)
 		}
 		intro := q.IntroducedAt
 		prev.RemovedAt = &intro
+		prev.ReplacementReason = predecessorReason
 		succIntro := next.IntroducedAt
 		q.RemovedAt = &succIntro
+		q.ReplacementReason = predecessorReason
 	}
 
-	r.queens[q.ID] = q
+	stored := *q
+	stored.ReplacementReason = nil
+	r.queens[q.ID] = &stored
 	return nil
 }
 
 func (r *fakeQueenRepo) GetCurrentByHiveID(ctx context.Context, hiveID uuid.UUID) (*domainqueen.Queen, error) {
 	for _, q := range r.queens {
 		if q.HiveID == hiveID && q.RemovedAt == nil {
-			return q, nil
+			return r.withIncomingReason(q), nil
 		}
 	}
 	return nil, domainqueen.ErrNotFound
@@ -122,18 +189,22 @@ func (r *fakeQueenRepo) GetByID(ctx context.Context, hiveID, queenID uuid.UUID) 
 	if !ok || q.HiveID != hiveID {
 		return nil, domainqueen.ErrNotFound
 	}
-	return q, nil
+	return r.withIncomingReason(q), nil
 }
 
 func (r *fakeQueenRepo) ListHistoryByHiveID(ctx context.Context, hiveID uuid.UUID) ([]*domainqueen.Queen, error) {
 	list := r.getOrdered(hiveID)
-	for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
-		list[i], list[j] = list[j], list[i]
+	res := make([]*domainqueen.Queen, len(list))
+	for i := range list {
+		res[i] = r.withIncomingReason(list[i])
 	}
-	return list, nil
+	for i, j := 0, len(res)-1; i < j; i, j = i+1, j-1 {
+		res[i], res[j] = res[j], res[i]
+	}
+	return res, nil
 }
 
-func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, notes string) (*domainqueen.Queen, error) {
+func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, replacementReason *domainqueen.ReplacementReason, hasReplacementReason bool, notes string) (*domainqueen.Queen, error) {
 	existing := r.getOrdered(hiveID)
 	targetIdx := -1
 	for i, q := range existing {
@@ -144,6 +215,10 @@ func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.
 	}
 	if targetIdx == -1 {
 		return nil, domainqueen.ErrNotFound
+	}
+
+	if targetIdx == 0 && hasReplacementReason && replacementReason != nil {
+		return nil, domainqueen.ErrReplacementReasonNotAllowed
 	}
 
 	if targetIdx > 0 {
@@ -159,10 +234,15 @@ func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.
 		}
 	}
 
-	if targetIdx > 0 && !existing[targetIdx].IntroducedAt.Equal(introducedAt) {
+	if targetIdx > 0 {
 		prev := existing[targetIdx-1]
-		intro := introducedAt
-		prev.RemovedAt = &intro
+		if !existing[targetIdx].IntroducedAt.Equal(introducedAt) {
+			intro := introducedAt
+			prev.RemovedAt = &intro
+		}
+		if hasReplacementReason {
+			prev.ReplacementReason = replacementReason
+		}
 	}
 
 	target := existing[targetIdx]
@@ -172,7 +252,7 @@ func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.
 	target.Notes = notes
 	target.UpdatedAt = time.Now().UTC()
 
-	return target, nil
+	return r.withIncomingReason(target), nil
 }
 
 func (r *fakeQueenRepo) DeleteLatest(ctx context.Context, hiveID, queenID uuid.UUID) error {
@@ -202,6 +282,7 @@ func (r *fakeQueenRepo) DeleteLatest(ctx context.Context, hiveID, queenID uuid.U
 	if len(existing) > 1 {
 		prev := existing[len(existing)-2]
 		prev.RemovedAt = nil
+		prev.ReplacementReason = nil
 	}
 
 	return nil
@@ -211,6 +292,10 @@ type fakeApiaryVerifier struct{}
 
 func (v *fakeApiaryVerifier) Verify(ctx context.Context, accessToken string, apiaryID uuid.UUID) (bool, error) {
 	return true, nil
+}
+
+func (v *fakeApiaryVerifier) WritableApiaryID(ctx context.Context, accessToken string) (*uuid.UUID, bool, error) {
+	return nil, true, nil
 }
 
 type fakeEntitlementResolver struct{}
@@ -234,10 +319,14 @@ func setupTestRouter(userID uuid.UUID, h *domainhive.Hive) (http.Handler, *fakeQ
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := queenhttp.NewHandler(svc, logger)
 
+	hiveSvc := apphive.NewService(hiveRepo, &fakeApiaryVerifier{}, nil, nil, nil, &fakeEntitlementResolver{}, queenRepo)
+	hiveHandler := hivehttp.NewHandler(hiveSvc, logger, "https://api.beebase.app")
+
 	r := chi.NewRouter()
 	r.Use(httpmw.RequireAuth(&fakeTokenParser{userID: userID}))
 
 	r.Route("/api/v1/hives/{hiveId}", func(r chi.Router) {
+		r.Get("/", hiveHandler.Get)
 		r.Get("/queen", handler.GetCurrent)
 		r.Get("/queens", handler.ListHistory)
 		r.Post("/queens", handler.Create)
@@ -562,6 +651,289 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &getQ1)
 	if getQ1.RemovedAt == nil || getQ1.RemovedAt.Format(time.RFC3339) != "2026-04-01T00:00:00Z" {
 		t.Fatalf("Q1 removedAt not recalculated: %v", getQ1.RemovedAt)
+	}
+}
+
+func TestQueenHTTP_ReplacementReason(t *testing.T) {
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	hiveID := uuid.New()
+	h := &domainhive.Hive{
+		ID:        hiveID,
+		UserID:    userID,
+		ApiaryID:  apiaryID,
+		Name:      "Test Hive",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	router, _ := setupTestRouter(userID, h)
+
+	// 1. POST first queen with replacementReason -> 400 replacement_reason_not_allowed
+	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"year":              2025,
+		"introducedAt":      "2025-04-10T00:00:00Z",
+		"replacementReason": "LOW_EGG_LAYING",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for first queen with reason, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var errResp struct {
+		Error struct {
+			Fields map[string]string `json:"fields"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if errResp.Error.Fields["replacementReason"] != queenhttp.CodeReplacementReasonNotAllowed {
+		t.Errorf("expected %q, got %q", queenhttp.CodeReplacementReasonNotAllowed, errResp.Error.Fields["replacementReason"])
+	}
+
+	// 2. POST with invalid enum -> 400 replacement_reason_invalid
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"year":              2025,
+		"introducedAt":      "2025-04-10T00:00:00Z",
+		"replacementReason": "INVALID_ENUM_CODE",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid enum, got %d", rec.Code)
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if errResp.Error.Fields["replacementReason"] != queenhttp.CodeReplacementReasonInvalid {
+		t.Errorf("expected %q, got %q", queenhttp.CodeReplacementReasonInvalid, errResp.Error.Fields["replacementReason"])
+	}
+
+	// 3. POST first queen without reason -> 201, replacementReason == null
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"year":         2025,
+		"introducedAt": "2025-04-10T00:00:00Z",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var qA queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &qA)
+	if qA.ReplacementReason != nil {
+		t.Errorf("first queen replacementReason should be nil, got %v", *qA.ReplacementReason)
+	}
+
+	// 4. POST second queen with replacementReason: "LOW_EGG_LAYING" -> 201, qB has replacementReason == "LOW_EGG_LAYING"
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"year":              2026,
+		"introducedAt":      "2026-05-15T00:00:00Z",
+		"replacementReason": "LOW_EGG_LAYING",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var qB queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &qB)
+	if qB.ReplacementReason == nil || *qB.ReplacementReason != "LOW_EGG_LAYING" {
+		t.Fatalf("new current queen replacementReason should be LOW_EGG_LAYING, got %v", qB.ReplacementReason)
+	}
+
+	// Predecessor qA has incoming transition reason = nil
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var qAGet queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
+	if qAGet.ReplacementReason != nil {
+		t.Fatalf("expected oldest queen qA to have replacementReason nil, got %v", qAGet.ReplacementReason)
+	}
+
+	// 5. PUT oldest queen qA with replacementReason -> 400 replacement_reason_not_allowed
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), map[string]any{
+		"year":              2025,
+		"introducedAt":      "2025-04-10T00:00:00Z",
+		"replacementReason": "AGING_AND_WEAR",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oldest queen with reason, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if errResp.Error.Fields["replacementReason"] != queenhttp.CodeReplacementReasonNotAllowed {
+		t.Errorf("expected %q, got %q", queenhttp.CodeReplacementReasonNotAllowed, errResp.Error.Fields["replacementReason"])
+	}
+
+	// 6. PUT current queen qB with replacementReason: "DISEASE_OR_POOR_QUALITY" -> 200 OK
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
+		"year":              2026,
+		"introducedAt":      "2026-05-15T00:00:00Z",
+		"replacementReason": "DISEASE_OR_POOR_QUALITY",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for editing current queen reason, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var qBUpdated queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
+	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "DISEASE_OR_POOR_QUALITY" {
+		t.Errorf("expected DISEASE_OR_POOR_QUALITY, got %v", qBUpdated.ReplacementReason)
+	}
+
+	// 7. PUT qB with omitted replacementReason -> 200 OK, preserves existing reason
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
+		"year":         2026,
+		"introducedAt": "2026-05-15T00:00:00Z",
+		"notes":        "Updated notes",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for omitted reason update, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
+	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "DISEASE_OR_POOR_QUALITY" {
+		t.Errorf("expected DISEASE_OR_POOR_QUALITY preserved, got %v", qBUpdated.ReplacementReason)
+	}
+
+	// 8. PUT qB with replacementReason: null -> 200 OK, clears reason
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
+		"year":              2026,
+		"introducedAt":      "2026-05-15T00:00:00Z",
+		"replacementReason": nil,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for clearing reason, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
+	if qBUpdated.ReplacementReason != nil {
+		t.Errorf("expected cleared reason nil, got %v", *qBUpdated.ReplacementReason)
+	}
+
+	// 9. Introduce qC with reason on predecessor qB -> 201
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"year":              2027,
+		"introducedAt":      "2027-04-20T00:00:00Z",
+		"replacementReason": "NATURAL_SUPERSEDURE",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+	var qC queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &qC)
+	if qC.ReplacementReason == nil || *qC.ReplacementReason != "NATURAL_SUPERSEDURE" {
+		t.Fatalf("expected qC to have NATURAL_SUPERSEDURE, got %v", qC.ReplacementReason)
+	}
+
+	// Update qB (historical queen) with incoming reason "INJURY_OR_MUTILATION"
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
+		"year":              2026,
+		"introducedAt":      "2026-05-15T00:00:00Z",
+		"replacementReason": "INJURY_OR_MUTILATION",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for editing qB reason, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
+	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "INJURY_OR_MUTILATION" {
+		t.Errorf("expected qB to have INJURY_OR_MUTILATION, got %v", qBUpdated.ReplacementReason)
+	}
+
+	// DELETE qC: destroys transition B -> C, qB becomes active, but A -> B is preserved!
+	rec = doRequest(router, http.MethodDelete, "/api/v1/hives/"+hiveID.String()+"/queens/"+qC.ID.String(), nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+
+	// GET qB - must now have removedAt = null, and replacementReason = "INJURY_OR_MUTILATION" preserved
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var qBRolledBack queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &qBRolledBack)
+	if qBRolledBack.RemovedAt != nil {
+		t.Errorf("expected rolled back queen to have removedAt null, got %v", qBRolledBack.RemovedAt)
+	}
+	if qBRolledBack.ReplacementReason == nil || *qBRolledBack.ReplacementReason != "INJURY_OR_MUTILATION" {
+		t.Errorf("expected rolled back queen to preserve incoming reason INJURY_OR_MUTILATION, got %v", qBRolledBack.ReplacementReason)
+	}
+}
+
+func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	hiveID := uuid.New()
+
+	h := &domainhive.Hive{
+		ID:        hiveID,
+		UserID:    userID,
+		ApiaryID:  apiaryID,
+		Name:      "Hive Color Test",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	router, _ := setupTestRouter(userID, h)
+
+	// 1. GET /api/v1/hives/{hiveId} initially has currentQueen == nil
+	rec := doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String(), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for get hive, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var hiveResp struct {
+		ID           uuid.UUID           `json:"id"`
+		CurrentQueen *queenhttp.Response `json:"currentQueen"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &hiveResp)
+	if hiveResp.CurrentQueen != nil {
+		t.Fatalf("expected currentQueen to be nil initially, got: %+v", hiveResp.CurrentQueen)
+	}
+
+	// 2. Client attempts to pass markingColor, markingColorHex, removedAt in POST
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"year":            2026,
+		"introducedAt":    "2026-05-01T00:00:00Z",
+		"markingColor":    "red",                          // Backend-controlled; client override should be ignored
+		"markingColorHex": "#FF0000",                      // Backend-controlled; client override should be ignored
+		"removedAt":       "2026-08-01T00:00:00Z",          // Backend-controlled; client override should be ignored
+		"notes":           "Queen 2026",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var createdQ queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &createdQ)
+	if createdQ.MarkingColor != "white" || createdQ.MarkingColorHex != "#F8F9FA" {
+		t.Errorf("marking color not authoritatively derived: got %s (%s), want white (#F8F9FA)", createdQ.MarkingColor, createdQ.MarkingColorHex)
+	}
+	if createdQ.RemovedAt != nil {
+		t.Errorf("removedAt was not backend-controlled: got %v", createdQ.RemovedAt)
+	}
+
+	// 3. Embedded currentQueen in GET /hives/{hiveId} matches GET /hives/{hiveId}/queen
+	recHive := doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String(), nil)
+	recQueen := doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queen", nil)
+	if recHive.Code != http.StatusOK || recQueen.Code != http.StatusOK {
+		t.Fatalf("failed fetching hive or queen: %d, %d", recHive.Code, recQueen.Code)
+	}
+	var hiveWithQ struct {
+		CurrentQueen *queenhttp.Response `json:"currentQueen"`
+	}
+	_ = json.Unmarshal(recHive.Body.Bytes(), &hiveWithQ)
+	var dedicatedQ queenhttp.Response
+	_ = json.Unmarshal(recQueen.Body.Bytes(), &dedicatedQ)
+
+	if hiveWithQ.CurrentQueen == nil {
+		t.Fatal("expected embedded currentQueen to be non-nil")
+	}
+	if *hiveWithQ.CurrentQueen != dedicatedQ {
+		t.Fatalf("embedded currentQueen (%+v) does not match dedicated endpoint (%+v)", *hiveWithQ.CurrentQueen, dedicatedQ)
+	}
+
+	// 4. PUT year 2026 -> 2027 changes derived marking color to yellow (#FFE08A)
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+createdQ.ID.String(), map[string]any{
+		"year":            2027,
+		"introducedAt":    "2026-05-01T00:00:00Z",
+		"markingColor":    "blue",
+		"markingColorHex": "#0000FF",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for PUT year, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var updatedQ queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &updatedQ)
+	if updatedQ.Year != 2027 || updatedQ.MarkingColor != "yellow" || updatedQ.MarkingColorHex != "#FFE08A" {
+		t.Errorf("PUT year did not update derived color: got year=%d, color=%s, hex=%s", updatedQ.Year, updatedQ.MarkingColor, updatedQ.MarkingColorHex)
 	}
 }
 

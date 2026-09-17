@@ -43,6 +43,9 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
 	}
+	if in.ReplacementReason != nil && !in.ReplacementReason.IsValid() {
+		return nil, ErrReplacementReasonInvalid
+	}
 
 	h, err := s.hives.GetByID(ctx, userID, hiveID)
 	if err != nil {
@@ -53,8 +56,8 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	newQueen := domainqueen.New(hiveID, in.Year, in.MarkedAt, in.IntroducedAt, nil, in.Notes)
-	if err := s.queens.InsertInChain(ctx, newQueen); err != nil {
+	newQueen := domainqueen.New(hiveID, in.Year, in.MarkedAt, in.IntroducedAt, nil, nil, in.Notes)
+	if err := s.queens.InsertInChain(ctx, newQueen, in.ReplacementReason); err != nil {
 		return nil, err
 	}
 
@@ -94,6 +97,9 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
 	}
+	if in.HasReplacementReason && in.ReplacementReason != nil && !in.ReplacementReason.IsValid() {
+		return nil, ErrReplacementReasonInvalid
+	}
 
 	h, err := s.hives.GetByID(ctx, userID, hiveID)
 	if err != nil {
@@ -104,7 +110,7 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	return s.queens.UpdateInChain(ctx, hiveID, queenID, in.Year, in.MarkedAt, in.IntroducedAt, in.Notes)
+	return s.queens.UpdateInChain(ctx, hiveID, queenID, in.Year, in.MarkedAt, in.IntroducedAt, in.ReplacementReason, in.HasReplacementReason, in.Notes)
 }
 
 // Delete permanently removes the latest queen in the chain and rolls back the predecessor to current.

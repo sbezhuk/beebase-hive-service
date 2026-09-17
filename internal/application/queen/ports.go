@@ -21,6 +21,12 @@ var (
 	// ErrTimelineInvalid is returned when introduced_at violates chain bounds.
 	ErrTimelineInvalid = domainqueen.ErrTimelineInvalid
 
+	// ErrReplacementReasonInvalid indicates an unrecognized replacement reason enum.
+	ErrReplacementReasonInvalid = domainqueen.ErrReplacementReasonInvalid
+
+	// ErrReplacementReasonNotAllowed indicates replacement reason is not allowed in this context.
+	ErrReplacementReasonNotAllowed = domainqueen.ErrReplacementReasonNotAllowed
+
 	// ErrHiveNotFound indicates the hive does not exist, was deleted, or belongs to another user.
 	ErrHiveNotFound = domainhive.ErrNotFound
 
