@@ -13,6 +13,7 @@ import (
 
 	"github.com/sbezhuk/beebase-common/pagination"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
+	domainqueen "github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 )
 
@@ -903,3 +904,175 @@ func TestHiveRepository_DistinctApiaryIDsWithHives(t *testing.T) {
 		t.Error("apiaryEmpty has no hives, should not appear")
 	}
 }
+
+// TestHiveRepository_HardDelete_CascadesHiveQueens proves the database-level
+// ON DELETE CASCADE on hive_queens(hive_id) guarantees that hard-deleting a hive
+// physically removes all associated queen history (current and historical),
+// leaving zero orphaned records, while isolated hives/queens remain intact.
+func TestHiveRepository_HardDelete_CascadesHiveQueens(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+
+	// Hive A with 3 queens: 2 historical, 1 current
+	hiveA := hive.New(userID, apiaryID, "Hive A", "")
+	if err := hiveRepo.Create(ctx, hiveA); err != nil {
+		t.Fatalf("create hiveA: %v", err)
+	}
+
+	t1Intro := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
+	qA1 := domainqueen.New(hiveA.ID, 2025, &t1Intro, t1Intro, nil, "Historical 2025")
+
+	t2Intro := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	qA2 := domainqueen.New(hiveA.ID, 2026, &t2Intro, t2Intro, nil, "Historical 2026")
+
+	t3Intro := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
+	qA3 := domainqueen.New(hiveA.ID, 2027, &t3Intro, t3Intro, nil, "Current 2027")
+
+	for _, q := range []*domainqueen.Queen{qA1, qA2, qA3} {
+		if err := queenRepo.InsertInChain(ctx, q); err != nil {
+			t.Fatalf("create queen %s: %v", q.Notes, err)
+		}
+	}
+
+	// Hive B (isolation test under same user/apiary) with 1 current queen
+	hiveB := hive.New(userID, apiaryID, "Hive B", "")
+	if err := hiveRepo.Create(ctx, hiveB); err != nil {
+		t.Fatalf("create hiveB: %v", err)
+	}
+	qB1 := domainqueen.New(hiveB.ID, 2027, &t3Intro, t3Intro, nil, "Hive B Queen")
+	if err := queenRepo.InsertInChain(ctx, qB1); err != nil {
+		t.Fatalf("create qB1: %v", err)
+	}
+
+	// Hard-delete Hive A
+	if err := hiveRepo.HardDelete(ctx, userID, hiveA.ID); err != nil {
+		t.Fatalf("HardDelete hiveA: %v", err)
+	}
+
+	// Invariant check: SELECT COUNT(*) FROM hive_queens WHERE hive_id = hiveA.ID == 0
+	var countA int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hive_queens WHERE hive_id = $1", hiveA.ID).Scan(&countA); err != nil {
+		t.Fatalf("count hiveA queens: %v", err)
+	}
+	if countA != 0 {
+		t.Fatalf("expected 0 hive_queens for deleted hiveA, got %d", countA)
+	}
+
+	// Verify domain query returns ErrNotFound
+	if _, err := queenRepo.GetByID(ctx, hiveA.ID, qA3.ID); !errors.Is(err, domainqueen.ErrNotFound) {
+		t.Fatalf("GetByID for deleted hive's queen: got %v, want ErrNotFound", err)
+	}
+
+	// Isolation check: Hive B and its queen are completely intact
+	var countB int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hive_queens WHERE hive_id = $1", hiveB.ID).Scan(&countB); err != nil {
+		t.Fatalf("count hiveB queens: %v", err)
+	}
+	if countB != 1 {
+		t.Fatalf("hiveB queens modified unexpectedly: got %d, want 1", countB)
+	}
+	if _, err := queenRepo.GetByID(ctx, hiveB.ID, qB1.ID); err != nil {
+		t.Fatalf("hiveB queen not found: %v", err)
+	}
+}
+
+// TestHiveRepository_DeleteAllByUserHard_CascadesHiveQueens proves that account-level
+// hard delete of hives cascades cleanly to all hive_queens for that user across all their hives,
+// while leaving unrelated users' queen data intact.
+func TestHiveRepository_DeleteAllByUserHard_CascadesHiveQueens(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	user1 := uuid.New()
+	user2 := uuid.New()
+
+	apiary1 := uuid.New()
+	apiary2 := uuid.New()
+
+	// User 1 hives & queens
+	h1 := hive.New(user1, apiary1, "User1 Hive1", "")
+	h2 := hive.New(user1, apiary1, "User1 Hive2", "")
+	for _, h := range []*hive.Hive{h1, h2} {
+		if err := hiveRepo.Create(ctx, h); err != nil {
+			t.Fatalf("create h: %v", err)
+		}
+	}
+	tIntro := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	q1 := domainqueen.New(h1.ID, 2026, &tIntro, tIntro, nil, "U1H1 Queen")
+	q2 := domainqueen.New(h2.ID, 2026, &tIntro, tIntro, nil, "U1H2 Queen")
+	for _, q := range []*domainqueen.Queen{q1, q2} {
+		if err := queenRepo.InsertInChain(ctx, q); err != nil {
+			t.Fatalf("create q: %v", err)
+		}
+	}
+
+	// User 2 hive & queen (unrelated user)
+	h3 := hive.New(user2, apiary2, "User2 Hive", "")
+	if err := hiveRepo.Create(ctx, h3); err != nil {
+		t.Fatalf("create h3: %v", err)
+	}
+	q3 := domainqueen.New(h3.ID, 2026, &tIntro, tIntro, nil, "U2 Queen")
+	if err := queenRepo.InsertInChain(ctx, q3); err != nil {
+		t.Fatalf("create q3: %v", err)
+	}
+
+	// Execute account cleanup for user1
+	if err := hiveRepo.DeleteAllByUserHard(ctx, user1); err != nil {
+		t.Fatalf("DeleteAllByUserHard: %v", err)
+	}
+
+	// Check all User 1 hives are deleted
+	var countHivesU1 int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hives WHERE user_id = $1", user1).Scan(&countHivesU1); err != nil {
+		t.Fatalf("count user1 hives: %v", err)
+	}
+	if countHivesU1 != 0 {
+		t.Fatalf("user1 hives count = %d, want 0", countHivesU1)
+	}
+
+	// Check all User 1 queens are deleted
+	var countQueensU1 int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hive_queens WHERE hive_id IN ($1, $2)", h1.ID, h2.ID).Scan(&countQueensU1); err != nil {
+		t.Fatalf("count user1 queens: %v", err)
+	}
+	if countQueensU1 != 0 {
+		t.Fatalf("user1 queens count = %d, want 0", countQueensU1)
+	}
+
+	// Check User 2 hive and queen are untouched
+	var countHivesU2, countQueensU2 int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hives WHERE user_id = $1", user2).Scan(&countHivesU2); err != nil {
+		t.Fatalf("count user2 hives: %v", err)
+	}
+	if countHivesU2 != 1 {
+		t.Fatalf("user2 hives count = %d, want 1", countHivesU2)
+	}
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM hive_queens WHERE hive_id = $1", h3.ID).Scan(&countQueensU2); err != nil {
+		t.Fatalf("count user2 queens: %v", err)
+	}
+	if countQueensU2 != 1 {
+		t.Fatalf("user2 queens count = %d, want 1", countQueensU2)
+	}
+}
+
