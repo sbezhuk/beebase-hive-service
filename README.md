@@ -103,7 +103,10 @@ is never used as a fallback, in development or in production.
 | `HTTP_SHUTDOWN_TIMEOUT`     | `15s`                        | Max time to wait for graceful shutdown    |
 | `DATABASE_URL`              | *(required)*                 | PostgreSQL DSN                            |
 | `DATABASE_CONNECT_TIMEOUT`  | `5s`                         | Timeout for the initial DB connection      |
+| `REDIS_ADDR`                | *(required)*                 | Shared Redis session store for token revocation checks |
+| `REDIS_CONNECT_TIMEOUT`     | `5s`                         | Timeout for the initial Redis connection   |
 | `AUTH_JWKS_URL`             | *(required)*                 | auth-service's public key endpoint, used to verify access tokens |
+| `INTERNAL_SERVICE_TOKEN`    | *(required)*                 | Credential for authenticated internal cleanup and existence calls |
 | `PUBLIC_BASE_URL`           | *(required)*                 | Gateway's externally reachable base URL, used to build each image's `image_url` |
 | `APIARY_SERVICE_URL`        | *(required)*                 | apiary-service's base URL, used to confirm apiary ownership on create |
 | `TEST_DATABASE_URL`         | *(unset)*                    | Used only by `make test-integration`, never by the app |
@@ -148,14 +151,13 @@ is enforced in two layers:
    hive. A request for another user's hive returns the same
    `404 hive_not_found` as one that doesn't exist, never a `403`.
 
-Deletes are soft (`deleted_at` is set, the row is retained) per the
-project's offline-sync plan — hives are a synchronizable entity.
+Deletes are hard deletes. Before removing a hive row, the service cascades
+to its inspections, harvest records, and media owned by that hive.
 
-**Known limitation:** if an apiary is deleted in apiary-service, its
-hives here are not cascade-deleted or notified — there's no event bus or
-outbox between services yet (CLAUDE.md defers full synchronization).
-Those hives become orphaned but remain independently accessible to their
-owner until this is addressed.
+Apiary deletion invokes this service's authenticated internal cleanup
+endpoint, so normal account/apiary deletion cascades do not leave hives
+behind. There is still no general event bus or outbox for arbitrary
+out-of-band synchronization.
 
 ## Development
 
