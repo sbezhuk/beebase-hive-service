@@ -1294,6 +1294,45 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 		}
 	})
 
+	t.Run("Case 8b: edit oldest A preserves A to B replacement reason in A to B to C", func(t *testing.T) {
+		svc, queens, _, userID, hiveID := setupTest(t)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 4, 20, 0, 0, 0, 0, time.UTC)
+
+		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
+		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{
+			MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonLowEgg,
+		})
+		qC, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t3, IntroducedAt: t3})
+
+		updatedA, err := svc.Update(ctx, userID, "token", hiveID, qA.ID, appqueen.UpdateInput{
+			MarkedAt:             t1,
+			IntroducedAt:         t1,
+			Notes:                "A edited",
+			HasReplacementReason: false, // Flutter omits the transition field when it is unchanged.
+		})
+		if err != nil {
+			t.Fatalf("editing A with an existing A->B reason should succeed: %v", err)
+		}
+
+		if updatedA.Notes != "A edited" {
+			t.Fatalf("updated A notes = %q, want %q", updatedA.Notes, "A edited")
+		}
+		if queens.queens[qA.ID].ReplacementReason == nil || *queens.queens[qA.ID].ReplacementReason != reasonLowEgg {
+			t.Fatalf("A->B replacement reason was not preserved: %v", queens.queens[qA.ID].ReplacementReason)
+		}
+		if queens.queens[qA.ID].RemovedAt == nil || !queens.queens[qA.ID].RemovedAt.Equal(t2) {
+			t.Fatalf("A removed_at = %v, want %v", queens.queens[qA.ID].RemovedAt, t2)
+		}
+		if queens.queens[qB.ID].RemovedAt == nil || !queens.queens[qB.ID].RemovedAt.Equal(t3) {
+			t.Fatalf("B removed_at = %v, want %v", queens.queens[qB.ID].RemovedAt, t3)
+		}
+		if queens.queens[qC.ID].RemovedAt != nil {
+			t.Fatalf("C should remain current, removed_at = %v", queens.queens[qC.ID].RemovedAt)
+		}
+	})
+
 	// Case 9: Edit B introducedAt within bounds still updates A.removed_at correctly
 	t.Run("Case 9: Edit B introducedAt within bounds still updates A.removed_at correctly", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
