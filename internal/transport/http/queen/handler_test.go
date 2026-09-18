@@ -419,15 +419,35 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	var history []queenhttp.Response
+	var history struct {
+		Items      []queenhttp.Response `json:"items"`
+		Pagination struct {
+			Total int `json:"total"`
+		} `json:"pagination"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &history); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(history) != 3 {
-		t.Fatalf("expected 3 queens in history, got %d", len(history))
+	if len(history.Items) != 3 || history.Pagination.Total != 3 {
+		t.Fatalf("expected 3 queens in history, got %d", len(history.Items))
 	}
-	if history[0].ID != queen3ID || history[1].ID != queen2ID || history[2].ID != queen1ID {
+	if history.Items[0].ID != queen3ID || history.Items[1].ID != queen2ID || history.Items[2].ID != queen1ID {
 		t.Fatalf("unexpected history order")
+	}
+
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens?page=2&limit=2", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected paginated 200, got %d", rec.Code)
+	}
+	var secondPage struct {
+		Items      []queenhttp.Response `json:"items"`
+		Pagination pagination.Meta      `json:"pagination"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &secondPage); err != nil {
+		t.Fatalf("unmarshal paginated response: %v", err)
+	}
+	if len(secondPage.Items) != 1 || secondPage.Items[0].ID != queen1ID || secondPage.Pagination.Total != 3 || secondPage.Pagination.HasPrevious != true {
+		t.Fatalf("unexpected second page: %+v", secondPage)
 	}
 
 	// 7. DELETE middle queen (queen2) -> 409 Conflict with queen_not_latest

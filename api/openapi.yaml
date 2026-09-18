@@ -438,14 +438,27 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         "200":
           description: Queen history returned.
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/QueenResponse" }
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/QueenResponse" }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
         "404":
           description: Hive not found.
           content:

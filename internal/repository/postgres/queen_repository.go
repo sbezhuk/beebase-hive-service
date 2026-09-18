@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sbezhuk/beebase-common/pagination"
 
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
 )
@@ -499,7 +500,7 @@ func (r *QueenRepository) ListHistoryByHiveID(ctx context.Context, hiveID uuid.U
 		SELECT id, hive_id, marked_at, introduced_at, removed_at, replacement_reason, notes, created_at, updated_at
 		FROM hive_queens
 		WHERE hive_id = $1
-		ORDER BY introduced_at DESC, created_at DESC
+		ORDER BY introduced_at DESC, created_at DESC, id DESC
 	`
 	rows, err := r.db.Query(ctx, sql, hiveID)
 	if err != nil {
@@ -532,4 +533,38 @@ func (r *QueenRepository) ListHistoryByHiveID(ctx context.Context, hiveID uuid.U
 		queens = []*queen.Queen{}
 	}
 	return queens, nil
+}
+
+func (r *QueenRepository) ListHistoryPageByHiveID(ctx context.Context, hiveID uuid.UUID, p pagination.Params) ([]*queen.Queen, int, error) {
+	const sql = `
+		SELECT id, hive_id, marked_at, introduced_at, removed_at, replacement_reason, notes, created_at, updated_at
+		FROM hive_queens
+		WHERE hive_id = $1
+		ORDER BY introduced_at DESC, created_at DESC, id DESC
+		LIMIT $2 OFFSET $3
+	`
+	rows, err := r.db.Query(ctx, sql, hiveID, p.Limit, p.Offset())
+	if err != nil {
+		return nil, 0, fmt.Errorf("postgres: list queen history page: %w", err)
+	}
+	defer rows.Close()
+	var queens []*queen.Queen
+	for rows.Next() {
+		var q queen.Queen
+		if err := rows.Scan(&q.ID, &q.HiveID, &q.MarkedAt, &q.IntroducedAt, &q.RemovedAt, &q.ReplacementReason, &q.Notes, &q.CreatedAt, &q.UpdatedAt); err != nil {
+			return nil, 0, fmt.Errorf("postgres: scan queen page: %w", err)
+		}
+		queens = append(queens, &q)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("postgres: list queen history page rows: %w", err)
+	}
+	var total int
+	if err := r.db.QueryRow(ctx, `SELECT count(*) FROM hive_queens WHERE hive_id = $1`, hiveID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("postgres: count queen history: %w", err)
+	}
+	if queens == nil {
+		queens = []*queen.Queen{}
+	}
+	return queens, total, nil
 }

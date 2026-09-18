@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/sbezhuk/beebase-common/pagination"
 
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	domainhive "github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
@@ -89,6 +90,30 @@ func (s *Service) ListHistory(ctx context.Context, userID uuid.UUID, hiveID uuid
 		return nil, err
 	}
 	return s.queens.ListHistoryByHiveID(ctx, hiveID)
+}
+
+// ListHistoryPage returns one deterministic page for the public collection
+// endpoint while retaining the lifecycle service's unpaginated method.
+func (s *Service) ListHistoryPage(ctx context.Context, userID uuid.UUID, hiveID uuid.UUID, p pagination.Params) ([]*domainqueen.Queen, int, error) {
+	if _, err := s.hives.GetByID(ctx, userID, hiveID); err != nil {
+		return nil, 0, err
+	}
+	if repo, ok := s.queens.(domainqueen.PaginatedRepository); ok {
+		return repo.ListHistoryPageByHiveID(ctx, hiveID, p)
+	}
+	all, err := s.queens.ListHistoryByHiveID(ctx, hiveID)
+	if err != nil {
+		return nil, 0, err
+	}
+	start := p.Offset()
+	if start > len(all) {
+		start = len(all)
+	}
+	end := start + p.Limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[start:end], len(all), nil
 }
 
 // Update edits metadata and/or introducedAt for an existing queen.

@@ -11,6 +11,7 @@ import (
 
 	httpmw "github.com/sbezhuk/beebase-common/authmw"
 	"github.com/sbezhuk/beebase-common/httpx"
+	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	appqueen "github.com/sbezhuk/beebase-hive-service/internal/application/queen"
 	domainhive "github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
@@ -140,13 +141,18 @@ func (h *Handler) ListHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queens, err := h.service.ListHistory(r.Context(), userID, hiveID)
+	p, fields := pagination.ParseParams(r)
+	if len(fields) > 0 {
+		httpx.WriteValidationError(w, fields)
+		return
+	}
+	queens, total, err := h.service.ListHistoryPage(r.Context(), userID, hiveID, p)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, NewListResponse(queens))
+	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(NewListResponse(queens), p, total))
 }
 
 // Update handles PUT /api/v1/hives/{hiveId}/queens/{queenId}.

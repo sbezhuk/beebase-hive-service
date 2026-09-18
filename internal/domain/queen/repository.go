@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sbezhuk/beebase-common/pagination"
 )
 
 // Repository is the port through which the application persists and retrieves queens.
@@ -47,4 +48,11 @@ type Repository interface {
 	// Returns ErrQueenNotLatest if the queen is not the latest.
 	// If a predecessor exists, rolls it back to current by setting removed_at = NULL.
 	DeleteLatest(ctx context.Context, hiveID, queenID uuid.UUID) error
+}
+
+// PaginatedRepository is the optional persistence seam used by the public
+// paginated history endpoint.
+type PaginatedRepository interface {
+	Repository
+	ListHistoryPageByHiveID(ctx context.Context, hiveID uuid.UUID, p pagination.Params) (queens []*Queen, total int, err error)
 }
