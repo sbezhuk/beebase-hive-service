@@ -17,12 +17,12 @@ import (
 	"github.com/google/uuid"
 
 	httpmw "github.com/sbezhuk/beebase-common/authmw"
+	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	appqueen "github.com/sbezhuk/beebase-hive-service/internal/application/queen"
 	domainhive "github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
 	domainqueen "github.com/sbezhuk/beebase-hive-service/internal/domain/queen"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
-	"github.com/sbezhuk/beebase-common/pagination"
 	queenhttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/queen"
 )
 
@@ -104,20 +104,11 @@ func (r *fakeQueenRepo) getOrdered(hiveID uuid.UUID) []*domainqueen.Queen {
 	return list
 }
 
-func (r *fakeQueenRepo) withIncomingReason(q *domainqueen.Queen) *domainqueen.Queen {
-	existing := r.getOrdered(q.HiveID)
-	var incomingReason *domainqueen.ReplacementReason
-	for i, item := range existing {
-		if item.ID == q.ID {
-			if i > 0 {
-				incomingReason = existing[i-1].ReplacementReason
-			}
-			break
-		}
-	}
-	clone := *q
-	clone.ReplacementReason = incomingReason
-	return &clone
+// clone returns a shallow copy of q, so callers can't mutate the repo's
+// internal state through the returned pointer.
+func (r *fakeQueenRepo) clone(q *domainqueen.Queen) *domainqueen.Queen {
+	cloned := *q
+	return &cloned
 }
 
 func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen, predecessorReason *domainqueen.ReplacementReason) error {
@@ -141,7 +132,8 @@ func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen,
 		prev.RemovedAt = &intro
 		prev.ReplacementReason = predecessorReason
 		q.RemovedAt = nil
-		q.ReplacementReason = predecessorReason
+		// q owns no replacement_reason of its own yet: predecessorReason belongs on prev's own row.
+		q.ReplacementReason = nil
 	} else if q.IntroducedAt.Before(existing[0].IntroducedAt) {
 		if predecessorReason != nil {
 			return domainqueen.ErrReplacementReasonNotAllowed
@@ -166,7 +158,8 @@ func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen,
 		prev.ReplacementReason = predecessorReason
 		succIntro := next.IntroducedAt
 		q.RemovedAt = &succIntro
-		q.ReplacementReason = predecessorReason
+		// q owns no replacement_reason of its own yet: predecessorReason belongs on prev's own row.
+		q.ReplacementReason = nil
 	}
 
 	stored := *q
@@ -178,7 +171,7 @@ func (r *fakeQueenRepo) InsertInChain(ctx context.Context, q *domainqueen.Queen,
 func (r *fakeQueenRepo) GetCurrentByHiveID(ctx context.Context, hiveID uuid.UUID) (*domainqueen.Queen, error) {
 	for _, q := range r.queens {
 		if q.HiveID == hiveID && q.RemovedAt == nil {
-			return r.withIncomingReason(q), nil
+			return r.clone(q), nil
 		}
 	}
 	return nil, domainqueen.ErrNotFound
@@ -189,14 +182,14 @@ func (r *fakeQueenRepo) GetByID(ctx context.Context, hiveID, queenID uuid.UUID) 
 	if !ok || q.HiveID != hiveID {
 		return nil, domainqueen.ErrNotFound
 	}
-	return r.withIncomingReason(q), nil
+	return r.clone(q), nil
 }
 
 func (r *fakeQueenRepo) ListHistoryByHiveID(ctx context.Context, hiveID uuid.UUID) ([]*domainqueen.Queen, error) {
 	list := r.getOrdered(hiveID)
 	res := make([]*domainqueen.Queen, len(list))
 	for i := range list {
-		res[i] = r.withIncomingReason(list[i])
+		res[i] = r.clone(list[i])
 	}
 	for i, j := 0, len(res)-1; i < j; i, j = i+1, j-1 {
 		res[i], res[j] = res[j], res[i]
@@ -204,7 +197,7 @@ func (r *fakeQueenRepo) ListHistoryByHiveID(ctx context.Context, hiveID uuid.UUI
 	return res, nil
 }
 
-func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, replacementReason *domainqueen.ReplacementReason, hasReplacementReason bool, notes string) (*domainqueen.Queen, error) {
+func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.UUID, markedAt time.Time, introducedAt time.Time, replacementReason *domainqueen.ReplacementReason, hasReplacementReason bool, notes string) (*domainqueen.Queen, error) {
 	existing := r.getOrdered(hiveID)
 	targetIdx := -1
 	for i, q := range existing {
@@ -246,13 +239,13 @@ func (r *fakeQueenRepo) UpdateInChain(ctx context.Context, hiveID, queenID uuid.
 	}
 
 	target := existing[targetIdx]
-	target.Year = year
 	target.MarkedAt = markedAt
 	target.IntroducedAt = introducedAt
 	target.Notes = notes
 	target.UpdatedAt = time.Now().UTC()
+	// target's own replacement_reason column is untouched by this update.
 
-	return r.withIncomingReason(target), nil
+	return r.clone(target), nil
 }
 
 func (r *fakeQueenRepo) DeleteLatest(ctx context.Context, hiveID, queenID uuid.UUID) error {
@@ -372,7 +365,7 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 
 	// 2. POST /queens -> creates 2025 queen (Blue)
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2025,
+		"markedAt":     "2025-01-01T00:00:00Z",
 		"introducedAt": "2025-01-01T00:00:00Z",
 		"notes":        "First queen",
 	})
@@ -397,7 +390,7 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 
 	// 4. POST /queens with 2026 queen -> automatically closes previous and becomes current
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2026-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
@@ -410,7 +403,7 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 
 	// 5. POST /queens with 2027 queen
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2027,
+		"markedAt":     "2027-01-01T00:00:00Z",
 		"introducedAt": "2027-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
@@ -463,7 +456,7 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 
 	// 10. PUT /queens/{queen2ID} within bounds -> succeeds
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+queen2ID.String(), map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2026-06-01T00:00:00Z",
 		"notes":        "Updated queen2",
 	})
@@ -488,39 +481,49 @@ func TestQueenHTTP_Validation(t *testing.T) {
 
 	router, _ := setupTestRouter(userID, h)
 
-	// Year missing (0)
-	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"introducedAt": "2026-01-01T00:00:00Z",
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing year, got %d", rec.Code)
-	}
-
-	// Year invalid (e.g. 500)
-	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         500,
-		"introducedAt": "2026-01-01T00:00:00Z",
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid year, got %d", rec.Code)
-	}
-
-	// Missing introducedAt
-	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year": 2026,
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing introducedAt, got %d", rec.Code)
-	}
 	var valErr struct {
 		Error struct {
 			Code   string            `json:"code"`
 			Fields map[string]string `json:"fields"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &valErr); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
+
+	// markedAt missing: there is no year input any more - markedAt is required instead.
+	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"introducedAt": "2026-01-01T00:00:00Z",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing markedAt, got %d", rec.Code)
 	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &valErr)
+	if valErr.Error.Fields["markedAt"] != "marked_at_required" {
+		t.Fatalf("expected fields.markedAt = marked_at_required, got: %v", valErr.Error.Fields)
+	}
+
+	// A queen may be marked well before she is introduced into this hive - an
+	// old markedAt year is valid on its own; there is no "year invalid" concept
+	// any more (year is derived, not user input).
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"markedAt":     "1990-01-01T00:00:00Z",
+		"introducedAt": "2026-01-01T00:00:00Z",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for markedAt long before introducedAt, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Year != 1990 {
+		t.Fatalf("expected year 1990 derived from markedAt, got %d", resp.Year)
+	}
+
+	// Missing introducedAt
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"markedAt": "2026-01-01T00:00:00Z",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing introducedAt, got %d", rec.Code)
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &valErr)
 	if valErr.Error.Fields["introducedAt"] != "introduced_at_required" {
 		t.Fatalf("expected fields.introducedAt = introduced_at_required, got: %v", valErr.Error.Fields)
 	}
@@ -537,12 +540,12 @@ func TestQueenHTTP_DuplicateIntroducedAt_Conflict(t *testing.T) {
 	router, _ := setupTestRouter(userID, h)
 
 	doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2025,
+		"markedAt":     "2025-01-01T00:00:00Z",
 		"introducedAt": "2025-01-01T00:00:00Z",
 	})
 
 	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2025-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusConflict {
@@ -562,7 +565,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// Create Q1 (2025-01-01)
 	rec1 := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2025,
+		"markedAt":     "2025-01-01T00:00:00Z",
 		"introducedAt": "2025-01-01T00:00:00Z",
 	})
 	var r1 queenhttp.Response
@@ -571,7 +574,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// Create Q2 (2026-01-01)
 	rec2 := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2026-01-01T00:00:00Z",
 	})
 	var r2 queenhttp.Response
@@ -580,7 +583,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// Create Q3 (2027-01-01)
 	rec3 := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2027,
+		"markedAt":     "2027-01-01T00:00:00Z",
 		"introducedAt": "2027-01-01T00:00:00Z",
 	})
 	var r3 queenhttp.Response
@@ -589,7 +592,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 1. Q2 equal to Q1 (exact equality with previous) -> 400 timeline_invalid
 	rec := doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q2ID.String(), map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2025-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -607,7 +610,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 2. Q2 equal to Q3 (exact equality with next) -> 400 timeline_invalid
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q2ID.String(), map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2027-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -616,7 +619,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 3. Q1 (oldest) equal to Q2 -> 400 timeline_invalid
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q1ID.String(), map[string]any{
-		"year":         2025,
+		"markedAt":     "2025-01-01T00:00:00Z",
 		"introducedAt": "2026-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -625,7 +628,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 4. Q3 (latest) equal to Q2 -> 400 timeline_invalid
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q3ID.String(), map[string]any{
-		"year":         2027,
+		"markedAt":     "2027-01-01T00:00:00Z",
 		"introducedAt": "2026-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -634,7 +637,7 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 5. Valid Q2 update: 2026-04-01 -> 200 OK
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q2ID.String(), map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2026-04-01T00:00:00Z",
 		"notes":        "April Q2",
 	})
@@ -671,7 +674,7 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 1. POST first queen with replacementReason -> 400 replacement_reason_not_allowed
 	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":              2025,
+		"markedAt":          "2025-01-01T00:00:00Z",
 		"introducedAt":      "2025-04-10T00:00:00Z",
 		"replacementReason": "LOW_EGG_LAYING",
 	})
@@ -690,7 +693,7 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 2. POST with invalid enum -> 400 replacement_reason_invalid
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":              2025,
+		"markedAt":          "2025-01-01T00:00:00Z",
 		"introducedAt":      "2025-04-10T00:00:00Z",
 		"replacementReason": "INVALID_ENUM_CODE",
 	})
@@ -704,7 +707,7 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 3. POST first queen without reason -> 201, replacementReason == null
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":         2025,
+		"markedAt":     "2025-01-01T00:00:00Z",
 		"introducedAt": "2025-04-10T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
@@ -716,9 +719,11 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 		t.Errorf("first queen replacementReason should be nil, got %v", *qA.ReplacementReason)
 	}
 
-	// 4. POST second queen with replacementReason: "LOW_EGG_LAYING" -> 201, qB has replacementReason == "LOW_EGG_LAYING"
+	// 4. POST second queen with replacementReason: "LOW_EGG_LAYING" -> 201. This describes why
+	// qA (the predecessor) was replaced, so qA owns it; qB's own reason stays null (she hasn't
+	// been replaced yet).
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":              2026,
+		"markedAt":          "2026-01-01T00:00:00Z",
 		"introducedAt":      "2026-05-15T00:00:00Z",
 		"replacementReason": "LOW_EGG_LAYING",
 	})
@@ -727,24 +732,24 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	}
 	var qB queenhttp.Response
 	_ = json.Unmarshal(rec.Body.Bytes(), &qB)
-	if qB.ReplacementReason == nil || *qB.ReplacementReason != "LOW_EGG_LAYING" {
-		t.Fatalf("new current queen replacementReason should be LOW_EGG_LAYING, got %v", qB.ReplacementReason)
+	if qB.ReplacementReason != nil {
+		t.Fatalf("new current queen's own replacementReason should be nil, got %v", *qB.ReplacementReason)
 	}
 
-	// Predecessor qA has incoming transition reason = nil
+	// qA now owns why she was replaced: LOW_EGG_LAYING
 	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	var qAGet queenhttp.Response
 	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
-	if qAGet.ReplacementReason != nil {
-		t.Fatalf("expected oldest queen qA to have replacementReason nil, got %v", qAGet.ReplacementReason)
+	if qAGet.ReplacementReason == nil || *qAGet.ReplacementReason != "LOW_EGG_LAYING" {
+		t.Fatalf("expected qA own replacementReason LOW_EGG_LAYING, got %v", qAGet.ReplacementReason)
 	}
 
 	// 5. PUT oldest queen qA with replacementReason -> 400 replacement_reason_not_allowed
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), map[string]any{
-		"year":              2025,
+		"markedAt":          "2025-01-01T00:00:00Z",
 		"introducedAt":      "2025-04-10T00:00:00Z",
 		"replacementReason": "AGING_AND_WEAR",
 	})
@@ -756,9 +761,10 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 		t.Errorf("expected %q, got %q", queenhttp.CodeReplacementReasonNotAllowed, errResp.Error.Fields["replacementReason"])
 	}
 
-	// 6. PUT current queen qB with replacementReason: "DISEASE_OR_POOR_QUALITY" -> 200 OK
+	// 6. PUT current queen qB with replacementReason: "DISEASE_OR_POOR_QUALITY" -> 200 OK.
+	// This edits why qA (qB's predecessor) was replaced, so it writes qA's row, not qB's own.
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"year":              2026,
+		"markedAt":          "2026-01-01T00:00:00Z",
 		"introducedAt":      "2026-05-15T00:00:00Z",
 		"replacementReason": "DISEASE_OR_POOR_QUALITY",
 	})
@@ -767,13 +773,18 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	}
 	var qBUpdated queenhttp.Response
 	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
-	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "DISEASE_OR_POOR_QUALITY" {
-		t.Errorf("expected DISEASE_OR_POOR_QUALITY, got %v", qBUpdated.ReplacementReason)
+	if qBUpdated.ReplacementReason != nil {
+		t.Errorf("expected qB's own reason nil, got %v", *qBUpdated.ReplacementReason)
+	}
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
+	if qAGet.ReplacementReason == nil || *qAGet.ReplacementReason != "DISEASE_OR_POOR_QUALITY" {
+		t.Errorf("expected qA own reason overwritten to DISEASE_OR_POOR_QUALITY, got %v", qAGet.ReplacementReason)
 	}
 
-	// 7. PUT qB with omitted replacementReason -> 200 OK, preserves existing reason
+	// 7. PUT qB with omitted replacementReason -> 200 OK, preserves qA's existing reason
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"year":         2026,
+		"markedAt":     "2026-01-01T00:00:00Z",
 		"introducedAt": "2026-05-15T00:00:00Z",
 		"notes":        "Updated notes",
 	})
@@ -781,13 +792,18 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 		t.Fatalf("expected 200 for omitted reason update, got %d: %s", rec.Code, rec.Body.String())
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
-	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "DISEASE_OR_POOR_QUALITY" {
-		t.Errorf("expected DISEASE_OR_POOR_QUALITY preserved, got %v", qBUpdated.ReplacementReason)
+	if qBUpdated.ReplacementReason != nil {
+		t.Errorf("expected qB's own reason still nil, got %v", *qBUpdated.ReplacementReason)
+	}
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
+	if qAGet.ReplacementReason == nil || *qAGet.ReplacementReason != "DISEASE_OR_POOR_QUALITY" {
+		t.Errorf("expected qA reason preserved as DISEASE_OR_POOR_QUALITY, got %v", qAGet.ReplacementReason)
 	}
 
-	// 8. PUT qB with replacementReason: null -> 200 OK, clears reason
+	// 8. PUT qB with replacementReason: null -> 200 OK, clears qA's reason
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"year":              2026,
+		"markedAt":          "2026-01-01T00:00:00Z",
 		"introducedAt":      "2026-05-15T00:00:00Z",
 		"replacementReason": nil,
 	})
@@ -796,12 +812,18 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
 	if qBUpdated.ReplacementReason != nil {
-		t.Errorf("expected cleared reason nil, got %v", *qBUpdated.ReplacementReason)
+		t.Errorf("expected qB's own reason nil, got %v", *qBUpdated.ReplacementReason)
+	}
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
+	if qAGet.ReplacementReason != nil {
+		t.Errorf("expected qA's cleared reason nil, got %v", *qAGet.ReplacementReason)
 	}
 
-	// 9. Introduce qC with reason on predecessor qB -> 201
+	// 9. Introduce qC with reason describing why qB (its predecessor) was replaced -> 201.
+	// qC's own reason stays null; qB now owns NATURAL_SUPERSEDURE.
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":              2027,
+		"markedAt":          "2027-01-01T00:00:00Z",
 		"introducedAt":      "2027-04-20T00:00:00Z",
 		"replacementReason": "NATURAL_SUPERSEDURE",
 	})
@@ -810,13 +832,15 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	}
 	var qC queenhttp.Response
 	_ = json.Unmarshal(rec.Body.Bytes(), &qC)
-	if qC.ReplacementReason == nil || *qC.ReplacementReason != "NATURAL_SUPERSEDURE" {
-		t.Fatalf("expected qC to have NATURAL_SUPERSEDURE, got %v", qC.ReplacementReason)
+	if qC.ReplacementReason != nil {
+		t.Fatalf("expected qC's own reason nil, got %v", *qC.ReplacementReason)
 	}
 
-	// Update qB (historical queen) with incoming reason "INJURY_OR_MUTILATION"
+	// Update qB with replacementReason "INJURY_OR_MUTILATION": this describes why qA (qB's
+	// predecessor) was replaced, so it writes qA's row. qB's own reason (NATURAL_SUPERSEDURE,
+	// describing why she herself was later replaced by qC) is untouched.
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"year":              2026,
+		"markedAt":          "2026-01-01T00:00:00Z",
 		"introducedAt":      "2026-05-15T00:00:00Z",
 		"replacementReason": "INJURY_OR_MUTILATION",
 	})
@@ -824,17 +848,24 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 		t.Fatalf("expected 200 for editing qB reason, got %d: %s", rec.Code, rec.Body.String())
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &qBUpdated)
-	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "INJURY_OR_MUTILATION" {
-		t.Errorf("expected qB to have INJURY_OR_MUTILATION, got %v", qBUpdated.ReplacementReason)
+	if qBUpdated.ReplacementReason == nil || *qBUpdated.ReplacementReason != "NATURAL_SUPERSEDURE" {
+		t.Errorf("expected qB's own reason unchanged at NATURAL_SUPERSEDURE, got %v", qBUpdated.ReplacementReason)
+	}
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
+	if qAGet.ReplacementReason == nil || *qAGet.ReplacementReason != "INJURY_OR_MUTILATION" {
+		t.Errorf("expected qA own reason INJURY_OR_MUTILATION, got %v", qAGet.ReplacementReason)
 	}
 
-	// DELETE qC: destroys transition B -> C, qB becomes active, but A -> B is preserved!
+	// DELETE qC: destroys the B->C transition. qB becomes current again, so her own reason
+	// (NATURAL_SUPERSEDURE) is cleared to null - but A's own reason (why A was replaced by B)
+	// is untouched.
 	rec = doRequest(router, http.MethodDelete, "/api/v1/hives/"+hiveID.String()+"/queens/"+qC.ID.String(), nil)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d", rec.Code)
 	}
 
-	// GET qB - must now have removedAt = null, and replacementReason = "INJURY_OR_MUTILATION" preserved
+	// GET qB - must now have removedAt = null (current) and its own reason cleared to null.
 	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -844,8 +875,15 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	if qBRolledBack.RemovedAt != nil {
 		t.Errorf("expected rolled back queen to have removedAt null, got %v", qBRolledBack.RemovedAt)
 	}
-	if qBRolledBack.ReplacementReason == nil || *qBRolledBack.ReplacementReason != "INJURY_OR_MUTILATION" {
-		t.Errorf("expected rolled back queen to preserve incoming reason INJURY_OR_MUTILATION, got %v", qBRolledBack.ReplacementReason)
+	if qBRolledBack.ReplacementReason != nil {
+		t.Errorf("expected qB's own reason cleared to nil after becoming current again, got %v", *qBRolledBack.ReplacementReason)
+	}
+
+	// GET qA - A -> B transition (why A was replaced) must be preserved, untouched by the delete.
+	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &qAGet)
+	if qAGet.ReplacementReason == nil || *qAGet.ReplacementReason != "INJURY_OR_MUTILATION" {
+		t.Errorf("expected qA's reason preserved as INJURY_OR_MUTILATION, got %v", qAGet.ReplacementReason)
 	}
 }
 
@@ -881,11 +919,11 @@ func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
 
 	// 2. Client attempts to pass markingColor, markingColorHex, removedAt in POST
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"year":            2026,
+		"markedAt":        "2026-01-01T00:00:00Z",
 		"introducedAt":    "2026-05-01T00:00:00Z",
-		"markingColor":    "red",                          // Backend-controlled; client override should be ignored
-		"markingColorHex": "#FF0000",                      // Backend-controlled; client override should be ignored
-		"removedAt":       "2026-08-01T00:00:00Z",          // Backend-controlled; client override should be ignored
+		"markingColor":    "red",                  // Backend-controlled; client override should be ignored
+		"markingColorHex": "#FF0000",              // Backend-controlled; client override should be ignored
+		"removedAt":       "2026-08-01T00:00:00Z", // Backend-controlled; client override should be ignored
 		"notes":           "Queen 2026",
 	})
 	if rec.Code != http.StatusCreated {
@@ -922,7 +960,7 @@ func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
 
 	// 4. PUT year 2026 -> 2027 changes derived marking color to yellow (#FFE08A)
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+createdQ.ID.String(), map[string]any{
-		"year":            2027,
+		"markedAt":        "2027-01-01T00:00:00Z",
 		"introducedAt":    "2026-05-01T00:00:00Z",
 		"markingColor":    "blue",
 		"markingColorHex": "#0000FF",
@@ -937,3 +975,280 @@ func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
 	}
 }
 
+// ─── writability entitlement tests ──────────────────────────────────────────
+
+// configurableApiaryVerifier is a configurable apiary verifier for
+// writability tests. It satisfies both the appqueen.ApiaryVerifier port
+// and the apphive.ApiaryVerifier port (WritableApiaryID included so it can
+// also be used when wiring up an apphive.Service for the hive handler).
+type configurableApiaryVerifier struct {
+	writable bool
+}
+
+func (v *configurableApiaryVerifier) Verify(_ context.Context, _ string, _ uuid.UUID) (bool, error) {
+	return v.writable, nil
+}
+func (v *configurableApiaryVerifier) WritableApiaryID(_ context.Context, _ string) (*uuid.UUID, bool, error) {
+	return nil, !v.writable, nil // unrestricted=true when Pro/writable, false when Free
+}
+
+// configurableEntitlementResolver is a mutable entitlement resolver for
+// writability tests.
+type configurableEntitlementResolver struct {
+	entitlement string
+}
+
+func (e *configurableEntitlementResolver) GetEntitlement(_ context.Context, _ string) (string, error) {
+	return e.entitlement, nil
+}
+
+// configurableHiveRepo extends fakeHiveRepo with an explicit writableIDs
+// override so tests can force a hive outside the Free limit.
+type configurableHiveRepo struct {
+	fakeHiveRepo
+	writableOverride []uuid.UUID // nil = default (all owned hives)
+}
+
+func (r *configurableHiveRepo) WritableIDs(_ context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if r.writableOverride != nil {
+		return r.writableOverride, nil
+	}
+	var ids []uuid.UUID
+	for _, h := range r.hives {
+		if h.UserID == userID && h.DeletedAt == nil {
+			ids = append(ids, h.ID)
+			if limit > 0 && len(ids) >= limit {
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+// setupWritabilityRouter builds a full router where entitlement and apiary
+// writability are controlled by the caller.
+func setupWritabilityRouter(
+	userID uuid.UUID,
+	h *domainhive.Hive,
+	entitlement string,
+	apiaryWritable bool,
+	writableHiveIDs []uuid.UUID, // nil = include all
+) (http.Handler, *fakeQueenRepo) {
+	hiveRepo := &configurableHiveRepo{
+		fakeHiveRepo:     fakeHiveRepo{hives: map[uuid.UUID]*domainhive.Hive{h.ID: h}},
+		writableOverride: writableHiveIDs,
+	}
+	queensRepo := newFakeQueenRepo()
+	apiaryV := &configurableApiaryVerifier{writable: apiaryWritable}
+	entitlementR := &configurableEntitlementResolver{entitlement: entitlement}
+
+	svc := appqueen.NewService(queensRepo, hiveRepo, apiaryV, entitlementR)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := queenhttp.NewHandler(svc, logger)
+
+	r := chi.NewRouter()
+	r.Use(httpmw.RequireAuth(&fakeTokenParser{userID: userID}))
+	r.Route("/api/v1/hives/{hiveId}", func(r chi.Router) {
+		r.Get("/queen", handler.GetCurrent)
+		r.Get("/queens", handler.ListHistory)
+		r.Post("/queens", handler.Create)
+		r.Get("/queens/{queenId}", handler.GetByID)
+		r.Put("/queens/{queenId}", handler.Update)
+		r.Delete("/queens/{queenId}", handler.Delete)
+	})
+
+	return r, queensRepo
+}
+
+// TestQueenHTTP_WritabilityEntitlement verifies that the HTTP layer
+// correctly maps entitlement errors to the right 403 codes, and that GET
+// endpoints are never blocked by writability.
+func TestQueenHTTP_WritabilityEntitlement(t *testing.T) {
+	userID := uuid.New()
+	apiaryID := uuid.New()
+
+	newTestHive := func() *domainhive.Hive {
+		h := domainhive.New(userID, apiaryID, "test-hive", "")
+		h.ID = uuid.New()
+		return h
+	}
+
+	createBody := map[string]any{
+		"markedAt":     "2025-01-01T00:00:00Z",
+		"introducedAt": "2025-01-01T00:00:00Z",
+	}
+
+	// errorCode extracts resp.error.code from a WriteError body.
+	errorCode := func(body []byte) string {
+		var wrapper struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(body, &wrapper)
+		return wrapper.Error.Code
+	}
+
+	t.Run("Free_HiveOutsideLimit_Create_403_resource_pro_locked", func(t *testing.T) {
+		h := newTestHive()
+		// writableHiveIDs is empty → h is beyond the Free limit.
+		router, _ := setupWritabilityRouter(userID, h, apphive.EntitlementFree, true, []uuid.UUID{})
+
+		rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+h.ID.String()+"/queens", createBody)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := errorCode(rec.Body.Bytes()); got != queenhttp.CodeResourceProLocked {
+			t.Errorf("error code = %q, want %q", got, queenhttp.CodeResourceProLocked)
+		}
+	})
+
+	t.Run("Free_ApiaryLocked_Create_403_parent_resource_pro_locked", func(t *testing.T) {
+		h := newTestHive()
+		// Hive IS within limit but apiary is read-only.
+		router, _ := setupWritabilityRouter(userID, h, apphive.EntitlementFree, false, []uuid.UUID{h.ID})
+
+		rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+h.ID.String()+"/queens", createBody)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := errorCode(rec.Body.Bytes()); got != queenhttp.CodeParentResourceProLocked {
+			t.Errorf("error code = %q, want %q", got, queenhttp.CodeParentResourceProLocked)
+		}
+	})
+
+	t.Run("Free_HiveOutsideLimit_Update_403_resource_pro_locked", func(t *testing.T) {
+		h := newTestHive()
+		// First create via Pro, then switch to Free outside limit.
+		proRouter, queensRepo := setupWritabilityRouter(userID, h, apphive.EntitlementPro, true, nil)
+
+		rec := doRequest(proRouter, http.MethodPost, "/api/v1/hives/"+h.ID.String()+"/queens", createBody)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("Pro Create: got %d: %s", rec.Code, rec.Body.String())
+		}
+		var q queenhttp.Response
+		_ = json.Unmarshal(rec.Body.Bytes(), &q)
+
+		// Build Free router sharing the same queens repo.
+		hiveRepo := &configurableHiveRepo{
+			fakeHiveRepo:     fakeHiveRepo{hives: map[uuid.UUID]*domainhive.Hive{h.ID: h}},
+			writableOverride: []uuid.UUID{},
+		}
+		freeSvc := appqueen.NewService(
+			queensRepo, hiveRepo,
+			&configurableApiaryVerifier{writable: true},
+			&configurableEntitlementResolver{entitlement: apphive.EntitlementFree},
+		)
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		freeHandler := queenhttp.NewHandler(freeSvc, logger)
+		freeRouter := chi.NewRouter()
+		freeRouter.Use(httpmw.RequireAuth(&fakeTokenParser{userID: userID}))
+		freeRouter.Route("/api/v1/hives/{hiveId}", func(r chi.Router) {
+			r.Put("/queens/{queenId}", freeHandler.Update)
+		})
+
+		rec = doRequest(freeRouter, http.MethodPut,
+			"/api/v1/hives/"+h.ID.String()+"/queens/"+q.ID.String(),
+			map[string]any{"markedAt": "2025-01-01T00:00:00Z", "introducedAt": "2025-02-01T00:00:00Z"})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("Free Update beyond limit: got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := errorCode(rec.Body.Bytes()); got != queenhttp.CodeResourceProLocked {
+			t.Errorf("error code = %q, want %q", got, queenhttp.CodeResourceProLocked)
+		}
+	})
+
+	t.Run("Free_HiveOutsideLimit_Delete_403_resource_pro_locked", func(t *testing.T) {
+		h := newTestHive()
+		proRouter, queensRepo := setupWritabilityRouter(userID, h, apphive.EntitlementPro, true, nil)
+
+		rec := doRequest(proRouter, http.MethodPost, "/api/v1/hives/"+h.ID.String()+"/queens", createBody)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("Pro Create: got %d: %s", rec.Code, rec.Body.String())
+		}
+		var q queenhttp.Response
+		_ = json.Unmarshal(rec.Body.Bytes(), &q)
+
+		hiveRepo := &configurableHiveRepo{
+			fakeHiveRepo:     fakeHiveRepo{hives: map[uuid.UUID]*domainhive.Hive{h.ID: h}},
+			writableOverride: []uuid.UUID{},
+		}
+		freeSvc := appqueen.NewService(
+			queensRepo, hiveRepo,
+			&configurableApiaryVerifier{writable: true},
+			&configurableEntitlementResolver{entitlement: apphive.EntitlementFree},
+		)
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		freeHandler := queenhttp.NewHandler(freeSvc, logger)
+		freeRouter := chi.NewRouter()
+		freeRouter.Use(httpmw.RequireAuth(&fakeTokenParser{userID: userID}))
+		freeRouter.Route("/api/v1/hives/{hiveId}", func(r chi.Router) {
+			r.Delete("/queens/{queenId}", freeHandler.Delete)
+		})
+
+		rec = doRequest(freeRouter, http.MethodDelete,
+			"/api/v1/hives/"+h.ID.String()+"/queens/"+q.ID.String(), nil)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("Free Delete beyond limit: got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := errorCode(rec.Body.Bytes()); got != queenhttp.CodeResourceProLocked {
+			t.Errorf("error code = %q, want %q", got, queenhttp.CodeResourceProLocked)
+		}
+	})
+
+	t.Run("Pro_bypassesLimit_Create_201", func(t *testing.T) {
+		h := newTestHive()
+		// Empty writable set, locked apiary — Pro must bypass both.
+		router, _ := setupWritabilityRouter(userID, h, apphive.EntitlementPro, true, nil)
+
+		rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+h.ID.String()+"/queens", createBody)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("Pro Create: got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("GETs_alwaysAccessible_even_when_hive_readOnly", func(t *testing.T) {
+		h := newTestHive()
+		// Create a queen via Pro first.
+		proRouter, queensRepo := setupWritabilityRouter(userID, h, apphive.EntitlementPro, true, nil)
+		rec := doRequest(proRouter, http.MethodPost, "/api/v1/hives/"+h.ID.String()+"/queens", createBody)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("Pro Create: got %d: %s", rec.Code, rec.Body.String())
+		}
+		var q queenhttp.Response
+		_ = json.Unmarshal(rec.Body.Bytes(), &q)
+
+		// Worst-case Free router: apiary locked AND hive outside limit.
+		hiveRepo := &configurableHiveRepo{
+			fakeHiveRepo:     fakeHiveRepo{hives: map[uuid.UUID]*domainhive.Hive{h.ID: h}},
+			writableOverride: []uuid.UUID{},
+		}
+		freeSvc := appqueen.NewService(
+			queensRepo, hiveRepo,
+			&configurableApiaryVerifier{writable: false},
+			&configurableEntitlementResolver{entitlement: apphive.EntitlementFree},
+		)
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		freeHandler := queenhttp.NewHandler(freeSvc, logger)
+		freeRouter := chi.NewRouter()
+		freeRouter.Use(httpmw.RequireAuth(&fakeTokenParser{userID: userID}))
+		freeRouter.Route("/api/v1/hives/{hiveId}", func(r chi.Router) {
+			r.Get("/queen", freeHandler.GetCurrent)
+			r.Get("/queens", freeHandler.ListHistory)
+			r.Get("/queens/{queenId}", freeHandler.GetByID)
+		})
+
+		base := "/api/v1/hives/" + h.ID.String()
+		for _, tc := range []struct{ method, path string }{
+			{http.MethodGet, base + "/queen"},
+			{http.MethodGet, base + "/queens"},
+			{http.MethodGet, base + "/queens/" + q.ID.String()},
+		} {
+			rec := doRequest(freeRouter, tc.method, tc.path, nil)
+			if rec.Code != http.StatusOK {
+				t.Errorf("GET %s: expected 200 for read-only hive, got %d: %s",
+					tc.path, rec.Code, rec.Body.String())
+			}
+		}
+	})
+}

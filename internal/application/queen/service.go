@@ -37,8 +37,8 @@ func NewService(
 // Create registers a new queen into the hive's strict chronological chain.
 // It derives lifecycle boundaries automatically and transactionally.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID, in CreateInput) (*domainqueen.Queen, error) {
-	if in.Year < 1000 || in.Year > 9999 {
-		return nil, ErrInvalidYear
+	if in.MarkedAt.IsZero() {
+		return nil, ErrMarkedAtRequired
 	}
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
@@ -56,7 +56,7 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	newQueen := domainqueen.New(hiveID, in.Year, in.MarkedAt, in.IntroducedAt, nil, nil, in.Notes)
+	newQueen := domainqueen.New(hiveID, in.MarkedAt, in.IntroducedAt, nil, nil, in.Notes)
 	if err := s.queens.InsertInChain(ctx, newQueen, in.ReplacementReason); err != nil {
 		return nil, err
 	}
@@ -91,8 +91,8 @@ func (s *Service) ListHistory(ctx context.Context, userID uuid.UUID, hiveID uuid
 // Update edits metadata and/or introducedAt for an existing queen.
 // The queen must remain strictly within its chain bounds (predecessor.introduced_at < introducedAt < successor.introduced_at).
 func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken string, hiveID, queenID uuid.UUID, in UpdateInput) (*domainqueen.Queen, error) {
-	if in.Year < 1000 || in.Year > 9999 {
-		return nil, ErrInvalidYear
+	if in.MarkedAt.IsZero() {
+		return nil, ErrMarkedAtRequired
 	}
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
@@ -110,7 +110,7 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	return s.queens.UpdateInChain(ctx, hiveID, queenID, in.Year, in.MarkedAt, in.IntroducedAt, in.ReplacementReason, in.HasReplacementReason, in.Notes)
+	return s.queens.UpdateInChain(ctx, hiveID, queenID, in.MarkedAt, in.IntroducedAt, in.ReplacementReason, in.HasReplacementReason, in.Notes)
 }
 
 // Delete permanently removes the latest queen in the chain and rolls back the predecessor to current.

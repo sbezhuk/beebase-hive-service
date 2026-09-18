@@ -13,8 +13,7 @@ const maxNotesLength = 2000
 
 // Validation error codes for queen requests.
 const (
-	CodeYearRequired                = "year_required"
-	CodeYearInvalid                 = "year_invalid"
+	CodeMarkedAtRequired            = "marked_at_required"
 	CodeIntroducedAtRequired        = "introduced_at_required"
 	CodeNotesTooLong                = "notes_too_long"
 	CodeTimelineInvalid             = "timeline_invalid"
@@ -43,8 +42,8 @@ func decodeAndValidate(w http.ResponseWriter, r *http.Request, dst validatable) 
 }
 
 // CreateRequest is the request body for POST /api/v1/hives/{hiveId}/queens.
+// There is no year field: the marking year is always derived from markedAt.
 type CreateRequest struct {
-	Year              int        `json:"year"`
 	MarkedAt          *time.Time `json:"markedAt"`
 	IntroducedAt      *time.Time `json:"introducedAt"`
 	ReplacementReason *string    `json:"replacementReason"`
@@ -53,10 +52,8 @@ type CreateRequest struct {
 
 func (r *CreateRequest) Validate() map[string]string {
 	fields := map[string]string{}
-	if r.Year == 0 {
-		fields["year"] = CodeYearRequired
-	} else if r.Year < 1000 || r.Year > 9999 {
-		fields["year"] = CodeYearInvalid
+	if r.MarkedAt == nil || r.MarkedAt.IsZero() {
+		fields["markedAt"] = CodeMarkedAtRequired
 	}
 	if r.IntroducedAt == nil || r.IntroducedAt.IsZero() {
 		fields["introducedAt"] = CodeIntroducedAtRequired
@@ -71,8 +68,8 @@ func (r *CreateRequest) Validate() map[string]string {
 }
 
 // UpdateRequest is the request body for PUT /api/v1/hives/{hiveId}/queens/{queenId}.
+// There is no year field: the marking year is always derived from markedAt.
 type UpdateRequest struct {
-	Year                 int        `json:"year"`
 	MarkedAt             *time.Time `json:"markedAt"`
 	IntroducedAt         *time.Time `json:"introducedAt"`
 	ReplacementReason    *string    `json:"replacementReason"`
@@ -100,10 +97,8 @@ func (r *UpdateRequest) UnmarshalJSON(data []byte) error {
 
 func (r *UpdateRequest) Validate() map[string]string {
 	fields := map[string]string{}
-	if r.Year == 0 {
-		fields["year"] = CodeYearRequired
-	} else if r.Year < 1000 || r.Year > 9999 {
-		fields["year"] = CodeYearInvalid
+	if r.MarkedAt == nil || r.MarkedAt.IsZero() {
+		fields["markedAt"] = CodeMarkedAtRequired
 	}
 	if r.IntroducedAt == nil || r.IntroducedAt.IsZero() {
 		fields["introducedAt"] = CodeIntroducedAtRequired

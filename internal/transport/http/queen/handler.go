@@ -68,8 +68,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.service.Create(r.Context(), userID, token, hiveID, appqueen.CreateInput{
-		Year:              req.Year,
-		MarkedAt:          req.MarkedAt,
+		MarkedAt:          *req.MarkedAt,
 		IntroducedAt:      *req.IntroducedAt,
 		ReplacementReason: replacementReason,
 		Notes:             req.Notes,
@@ -179,8 +178,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := h.service.Update(r.Context(), userID, token, hiveID, queenID, appqueen.UpdateInput{
-		Year:                 req.Year,
-		MarkedAt:             req.MarkedAt,
+		MarkedAt:             *req.MarkedAt,
 		IntroducedAt:         *req.IntroducedAt,
 		ReplacementReason:    replacementReason,
 		HasReplacementReason: req.HasReplacementReason,
@@ -269,8 +267,8 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusConflict, CodeDuplicateIntroducedAt, "a queen with this introduction timestamp already exists in this hive")
 	case errors.Is(err, domainqueen.ErrActiveQueenExists):
 		httpx.WriteError(w, http.StatusConflict, CodeActiveQueenExists, "hive already has an active queen")
-	case errors.Is(err, appqueen.ErrInvalidYear):
-		httpx.WriteValidationError(w, map[string]string{"year": CodeYearInvalid})
+	case errors.Is(err, appqueen.ErrMarkedAtRequired):
+		httpx.WriteValidationError(w, map[string]string{"markedAt": CodeMarkedAtRequired})
 	case errors.Is(err, appqueen.ErrIntroducedAtRequired):
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeIntroducedAtRequired})
 	case errors.Is(err, appqueen.ErrTimelineInvalid):

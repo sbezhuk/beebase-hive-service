@@ -932,13 +932,13 @@ func TestHiveRepository_HardDelete_CascadesHiveQueens(t *testing.T) {
 	}
 
 	t1Intro := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
-	qA1 := domainqueen.New(hiveA.ID, 2025, &t1Intro, t1Intro, nil, nil, "Historical 2025")
+	qA1 := domainqueen.New(hiveA.ID, t1Intro, t1Intro, nil, nil, "Historical 2025")
 
 	t2Intro := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	qA2 := domainqueen.New(hiveA.ID, 2026, &t2Intro, t2Intro, nil, nil, "Historical 2026")
+	qA2 := domainqueen.New(hiveA.ID, t2Intro, t2Intro, nil, nil, "Historical 2026")
 
 	t3Intro := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
-	qA3 := domainqueen.New(hiveA.ID, 2027, &t3Intro, t3Intro, nil, nil, "Current 2027")
+	qA3 := domainqueen.New(hiveA.ID, t3Intro, t3Intro, nil, nil, "Current 2027")
 
 	for _, q := range []*domainqueen.Queen{qA1, qA2, qA3} {
 		if err := queenRepo.InsertInChain(ctx, q, nil); err != nil {
@@ -951,7 +951,7 @@ func TestHiveRepository_HardDelete_CascadesHiveQueens(t *testing.T) {
 	if err := hiveRepo.Create(ctx, hiveB); err != nil {
 		t.Fatalf("create hiveB: %v", err)
 	}
-	qB1 := domainqueen.New(hiveB.ID, 2027, &t3Intro, t3Intro, nil, nil, "Hive B Queen")
+	qB1 := domainqueen.New(hiveB.ID, t3Intro, t3Intro, nil, nil, "Hive B Queen")
 	if err := queenRepo.InsertInChain(ctx, qB1, nil); err != nil {
 		t.Fatalf("create qB1: %v", err)
 	}
@@ -1019,8 +1019,8 @@ func TestHiveRepository_DeleteAllByUserHard_CascadesHiveQueens(t *testing.T) {
 		}
 	}
 	tIntro := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	q1 := domainqueen.New(h1.ID, 2026, &tIntro, tIntro, nil, nil, "U1H1 Queen")
-	q2 := domainqueen.New(h2.ID, 2026, &tIntro, tIntro, nil, nil, "U1H2 Queen")
+	q1 := domainqueen.New(h1.ID, tIntro, tIntro, nil, nil, "U1H1 Queen")
+	q2 := domainqueen.New(h2.ID, tIntro, tIntro, nil, nil, "U1H2 Queen")
 	for _, q := range []*domainqueen.Queen{q1, q2} {
 		if err := queenRepo.InsertInChain(ctx, q, nil); err != nil {
 			t.Fatalf("create q: %v", err)
@@ -1032,7 +1032,7 @@ func TestHiveRepository_DeleteAllByUserHard_CascadesHiveQueens(t *testing.T) {
 	if err := hiveRepo.Create(ctx, h3); err != nil {
 		t.Fatalf("create h3: %v", err)
 	}
-	q3 := domainqueen.New(h3.ID, 2026, &tIntro, tIntro, nil, nil, "U2 Queen")
+	q3 := domainqueen.New(h3.ID, tIntro, tIntro, nil, nil, "U2 Queen")
 	if err := queenRepo.InsertInChain(ctx, q3, nil); err != nil {
 		t.Fatalf("create q3: %v", err)
 	}
@@ -1100,13 +1100,13 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 	// 1. First queen with reason is rejected
 	tA := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
 	reasonBad := domainqueen.ReasonLowEggLaying
-	qA := domainqueen.New(h.ID, 2025, &tA, tA, nil, &reasonBad, "Queen A")
+	qA := domainqueen.New(h.ID, tA, tA, nil, &reasonBad, "Queen A")
 	if err := queenRepo.InsertInChain(ctx, qA, &reasonBad); !errors.Is(err, domainqueen.ErrReplacementReasonNotAllowed) {
 		t.Fatalf("expected ErrReplacementReasonNotAllowed for first queen with reason, got: %v", err)
 	}
 
 	// 2. First queen without reason succeeds
-	qA = domainqueen.New(h.ID, 2025, &tA, tA, nil, nil, "Queen A")
+	qA = domainqueen.New(h.ID, tA, tA, nil, nil, "Queen A")
 	if err := queenRepo.InsertInChain(ctx, qA, nil); err != nil {
 		t.Fatalf("insert Q_A: %v", err)
 	}
@@ -1123,12 +1123,13 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 	// 3. Append Q_B with reason LOW_EGG_LAYING
 	tB := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	reasonAB := domainqueen.ReasonLowEggLaying
-	qB := domainqueen.New(h.ID, 2026, &tB, tB, nil, &reasonAB, "Queen B")
+	qB := domainqueen.New(h.ID, tB, tB, nil, &reasonAB, "Queen B")
 	if err := queenRepo.InsertInChain(ctx, qB, &reasonAB); err != nil {
 		t.Fatalf("insert Q_B: %v", err)
 	}
 
-	// Verify Q_B incoming reason via GetCurrentByHiveID (CTE window query)
+	// Verify Q_B's own reason is nil - she hasn't been replaced yet - even though she's
+	// current and was just created via a reasoned transition (the reason belongs to Q_A).
 	cur, err = queenRepo.GetCurrentByHiveID(ctx, h.ID)
 	if err != nil {
 		t.Fatalf("get current: %v", err)
@@ -1136,20 +1137,21 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 	if cur.ID != qB.ID {
 		t.Fatalf("expected current queen to be Q_B, got: %v", cur.ID)
 	}
-	if cur.ReplacementReason == nil || *cur.ReplacementReason != domainqueen.ReasonLowEggLaying {
-		t.Fatalf("expected Q_B incoming reason LOW_EGG_LAYING via window LAG, got: %v", cur.ReplacementReason)
+	if cur.ReplacementReason != nil {
+		t.Fatalf("expected Q_B's own reason nil, got: %v", *cur.ReplacementReason)
 	}
 
-	// Verify Q_B incoming reason via GetByID
+	// Verify Q_B's own reason via GetByID
 	gotB, err := queenRepo.GetByID(ctx, h.ID, qB.ID)
 	if err != nil {
 		t.Fatalf("get Q_B by id: %v", err)
 	}
-	if gotB.ReplacementReason == nil || *gotB.ReplacementReason != domainqueen.ReasonLowEggLaying {
-		t.Fatalf("expected Q_B GetByID incoming reason LOW_EGG_LAYING, got: %v", gotB.ReplacementReason)
+	if gotB.ReplacementReason != nil {
+		t.Fatalf("expected Q_B GetByID own reason nil, got: %v", *gotB.ReplacementReason)
 	}
 
-	// Verify Q_A via GetByID: removed_at = tB, physical replacement_reason = LOW_EGG_LAYING, but incoming reason = nil
+	// Verify Q_A via GetByID: removed_at = tB, own replacement_reason = LOW_EGG_LAYING
+	// (why she was replaced by Q_B).
 	gotA, err := queenRepo.GetByID(ctx, h.ID, qA.ID)
 	if err != nil {
 		t.Fatalf("get Q_A by id: %v", err)
@@ -1157,26 +1159,28 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 	if gotA.RemovedAt == nil || !gotA.RemovedAt.Equal(tB) {
 		t.Fatalf("expected Q_A removedAt = tB, got: %v", gotA.RemovedAt)
 	}
-	if gotA.ReplacementReason != nil {
-		t.Fatalf("expected Q_A incoming reason = nil (oldest queen), got: %v", gotA.ReplacementReason)
+	if gotA.ReplacementReason == nil || *gotA.ReplacementReason != domainqueen.ReasonLowEggLaying {
+		t.Fatalf("expected Q_A own reason LOW_EGG_LAYING, got: %v", gotA.ReplacementReason)
 	}
 
 	// 4. Append Q_C with reason AGING_AND_WEAR
 	tC := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
 	reasonBC := domainqueen.ReasonAgingAndWear
-	qC := domainqueen.New(h.ID, 2027, &tC, tC, nil, &reasonBC, "Queen C")
+	qC := domainqueen.New(h.ID, tC, tC, nil, &reasonBC, "Queen C")
 	if err := queenRepo.InsertInChain(ctx, qC, &reasonBC); err != nil {
 		t.Fatalf("insert Q_C: %v", err)
 	}
 
-	// 5. Update current queen Q_C incoming reason: PUT Q_C reason DISEASE_OR_POOR_QUALITY
+	// 5. PUT Q_C with reason DISEASE_OR_POOR_QUALITY: this describes why Q_B (Q_C's
+	// predecessor) was replaced, so it writes Q_B's own row. Q_C's own row - and the
+	// returned Queen - stay nil.
 	reasonBCUpdated := domainqueen.ReasonDiseaseOrPoorQuality
-	updatedC, err := queenRepo.UpdateInChain(ctx, h.ID, qC.ID, 2027, nil, tC, &reasonBCUpdated, true, "Updated C")
+	updatedC, err := queenRepo.UpdateInChain(ctx, h.ID, qC.ID, tC, tC, &reasonBCUpdated, true, "Updated C")
 	if err != nil {
 		t.Fatalf("update Q_C reason: %v", err)
 	}
-	if updatedC.ReplacementReason == nil || *updatedC.ReplacementReason != domainqueen.ReasonDiseaseOrPoorQuality {
-		t.Fatalf("expected updated incoming reason DISEASE_OR_POOR_QUALITY on Q_C, got: %v", updatedC.ReplacementReason)
+	if updatedC.ReplacementReason != nil {
+		t.Fatalf("expected Q_C's own reason to remain nil, got: %v", *updatedC.ReplacementReason)
 	}
 
 	// Check that physical Q_C has replacement_reason = NULL in database
@@ -1210,9 +1214,9 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 	if cur.ID != qB.ID || cur.RemovedAt != nil {
 		t.Fatalf("expected Q_B to be active, got: %+v", cur)
 	}
-	// Q_B incoming reason (from Q_A) is preserved!
-	if cur.ReplacementReason == nil || *cur.ReplacementReason != domainqueen.ReasonLowEggLaying {
-		t.Fatalf("expected Q_B incoming reason LOW_EGG_LAYING to be preserved, got: %v", cur.ReplacementReason)
+	// Q_B's own reason is cleared to null now that she's current again.
+	if cur.ReplacementReason != nil {
+		t.Fatalf("expected Q_B's own reason nil after becoming current, got: %v", *cur.ReplacementReason)
 	}
 
 	// Physical Q_B outgoing reason is now NULL
@@ -1221,6 +1225,15 @@ func TestQueenRepository_Integration_ChainLifecycleAndWindowQueries(t *testing.T
 	}
 	if physicalBReason != nil {
 		t.Fatalf("physical replacement_reason on rolled back Q_B must be NULL, got: %v", *physicalBReason)
+	}
+
+	// Q_A's own reason (why she was replaced by Q_B) is untouched by Q_C's deletion.
+	gotA, err = queenRepo.GetByID(ctx, h.ID, qA.ID)
+	if err != nil {
+		t.Fatalf("get Q_A by id after delete: %v", err)
+	}
+	if gotA.ReplacementReason == nil || *gotA.ReplacementReason != domainqueen.ReasonLowEggLaying {
+		t.Fatalf("expected Q_A own reason LOW_EGG_LAYING preserved, got: %v", gotA.ReplacementReason)
 	}
 }
 
@@ -1246,14 +1259,14 @@ func TestQueenRepository_Integration_InsertRetroactiveAndBeforeOldest(t *testing
 
 	// 1. Initial chain: A (2025) -> C (2027) with reason X on A
 	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	qA := domainqueen.New(h.ID, tA, tA, nil, nil, "A")
 	if err := queenRepo.InsertInChain(ctx, qA, nil); err != nil {
 		t.Fatalf("insert A: %v", err)
 	}
 
 	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonAC := domainqueen.ReasonNaturalSupersedure
-	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonAC, "C")
+	qC := domainqueen.New(h.ID, tC, tC, nil, &reasonAC, "C")
 	if err := queenRepo.InsertInChain(ctx, qC, &reasonAC); err != nil {
 		t.Fatalf("insert C: %v", err)
 	}
@@ -1261,7 +1274,7 @@ func TestQueenRepository_Integration_InsertRetroactiveAndBeforeOldest(t *testing
 	// 2. Retroactive insertion of B (2026) between A and C with reason Y
 	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonAB := domainqueen.ReasonLowEggLaying
-	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	qB := domainqueen.New(h.ID, tB, tB, nil, &reasonAB, "B")
 	if err := queenRepo.InsertInChain(ctx, qB, &reasonAB); err != nil {
 		t.Fatalf("insert B between A and C: %v", err)
 	}
@@ -1298,7 +1311,7 @@ func TestQueenRepository_Integration_InsertRetroactiveAndBeforeOldest(t *testing
 	// 3. Insert before oldest: A0 (2024)
 	tA0 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonA0 := domainqueen.ReasonDiseaseOrPoorQuality
-	qA0 := domainqueen.New(h.ID, 2024, nil, tA0, nil, &reasonA0, "A0")
+	qA0 := domainqueen.New(h.ID, tA0, tA0, nil, &reasonA0, "A0")
 	// Supplying reason must fail
 	if err := queenRepo.InsertInChain(ctx, qA0, &reasonA0); !errors.Is(err, domainqueen.ErrReplacementReasonNotAllowed) {
 		t.Fatalf("expected ErrReplacementReasonNotAllowed when inserting before oldest with reason, got: %v", err)
@@ -1340,44 +1353,46 @@ func TestQueenRepository_Integration_UpdateBoundsAndAtomicity(t *testing.T) {
 	}
 
 	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	qA := domainqueen.New(h.ID, tA, tA, nil, nil, "A")
 	_ = queenRepo.InsertInChain(ctx, qA, nil)
 
 	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonAB := domainqueen.ReasonLowEggLaying
-	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	qB := domainqueen.New(h.ID, tB, tB, nil, &reasonAB, "B")
 	_ = queenRepo.InsertInChain(ctx, qB, &reasonAB)
 
 	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonBC := domainqueen.ReasonAgingAndWear
-	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonBC, "C")
+	qC := domainqueen.New(h.ID, tC, tC, nil, &reasonBC, "C")
 	_ = queenRepo.InsertInChain(ctx, qC, &reasonBC)
 
 	// 1. Invalid update: B.introducedAt == A.introducedAt -> ErrTimelineInvalid
-	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, 2026, nil, tA, nil, false, "Invalid"); !errors.Is(err, domainqueen.ErrTimelineInvalid) {
+	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, tA, tA, nil, false, "Invalid"); !errors.Is(err, domainqueen.ErrTimelineInvalid) {
 		t.Fatalf("expected ErrTimelineInvalid for B == A, got: %v", err)
 	}
 
 	// 2. Invalid update: B.introducedAt == C.introducedAt -> ErrTimelineInvalid
-	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, 2026, nil, tC, nil, false, "Invalid"); !errors.Is(err, domainqueen.ErrTimelineInvalid) {
+	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, tC, tC, nil, false, "Invalid"); !errors.Is(err, domainqueen.ErrTimelineInvalid) {
 		t.Fatalf("expected ErrTimelineInvalid for B == C, got: %v", err)
 	}
 
 	// 3. Oldest queen A with non-null reason -> ErrReplacementReasonNotAllowed
 	reasonBad := domainqueen.ReasonDiseaseOrPoorQuality
-	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qA.ID, 2025, nil, tA, &reasonBad, true, "Invalid"); !errors.Is(err, domainqueen.ErrReplacementReasonNotAllowed) {
+	if _, err := queenRepo.UpdateInChain(ctx, h.ID, qA.ID, tA, tA, &reasonBad, true, "Invalid"); !errors.Is(err, domainqueen.ErrReplacementReasonNotAllowed) {
 		t.Fatalf("expected ErrReplacementReasonNotAllowed for oldest queen with reason, got: %v", err)
 	}
 
-	// 4. Valid update: B.introducedAt = 2026-06-01 + reason = BREED_CHANGE_OR_AGGRESSIVENESS
+	// 4. Valid update: B.introducedAt = 2026-06-01 + reason = BREED_CHANGE_OR_AGGRESSIVENESS.
+	// This reason describes why A (B's predecessor) was replaced, so it writes A's row.
+	// B's own row - already AGING_AND_WEAR, why she was in turn replaced by C - is untouched.
 	newTB := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	newReason := domainqueen.ReasonBreedChangeOrAggressiveness
-	updatedB, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, 2026, nil, newTB, &newReason, true, "Valid update")
+	updatedB, err := queenRepo.UpdateInChain(ctx, h.ID, qB.ID, newTB, newTB, &newReason, true, "Valid update")
 	if err != nil {
 		t.Fatalf("valid update failed: %v", err)
 	}
-	if updatedB.ReplacementReason == nil || *updatedB.ReplacementReason != newReason {
-		t.Fatalf("expected returned incoming reason %s, got: %v", newReason, updatedB.ReplacementReason)
+	if updatedB.ReplacementReason == nil || *updatedB.ReplacementReason != reasonBC {
+		t.Fatalf("expected B's own reason to remain %s, got: %v", reasonBC, updatedB.ReplacementReason)
 	}
 
 	// Verify predecessor A has removed_at = newTB and replacement_reason = newReason
@@ -1415,13 +1430,13 @@ func TestQueenRepository_Integration_PostgresConstraintsAndRollback(t *testing.T
 	}
 
 	tIntro := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	q1 := domainqueen.New(h.ID, 2026, nil, tIntro, nil, nil, "Q1")
+	q1 := domainqueen.New(h.ID, tIntro, tIntro, nil, nil, "Q1")
 	if err := queenRepo.InsertInChain(ctx, q1, nil); err != nil {
 		t.Fatalf("insert Q1: %v", err)
 	}
 
 	// 1. Duplicate (hive_id, introduced_at) constraint via InsertInChain
-	qDup := domainqueen.New(h.ID, 2026, nil, tIntro, nil, nil, "Q-Dup")
+	qDup := domainqueen.New(h.ID, tIntro, tIntro, nil, nil, "Q-Dup")
 	if err := queenRepo.InsertInChain(ctx, qDup, nil); !errors.Is(err, domainqueen.ErrDuplicateIntroducedAt) {
 		t.Fatalf("expected ErrDuplicateIntroducedAt, got: %v", err)
 	}
@@ -1429,8 +1444,8 @@ func TestQueenRepository_Integration_PostgresConstraintsAndRollback(t *testing.T
 	// 2. Raw SQL check: idx_hive_queens_one_current_per_hive (two active queens)
 	secondID := uuid.New()
 	_, err = tx.Exec(ctx, `
-		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, notes)
-		VALUES ($1, $2, 2027, '2027-01-01T00:00:00Z', NULL, 'Second Active')
+		INSERT INTO hive_queens (id, hive_id, marked_at, introduced_at, removed_at, notes)
+		VALUES ($1, $2, '2027-01-01T00:00:00Z', '2027-01-01T00:00:00Z', NULL, 'Second Active')
 	`, secondID, h.ID)
 	if err == nil {
 		t.Fatalf("expected unique constraint violation on idx_hive_queens_one_current_per_hive")
@@ -1440,8 +1455,8 @@ func TestQueenRepository_Integration_PostgresConstraintsAndRollback(t *testing.T
 	// (active queen with removed_at IS NULL cannot have non-null replacement_reason)
 	thirdID := uuid.New()
 	_, err = tx.Exec(ctx, `
-		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, replacement_reason, notes)
-		VALUES ($1, $2, 2028, '2028-01-01T00:00:00Z', NULL, 'LOW_EGG_LAYING', 'Invalid Active Reason')
+		INSERT INTO hive_queens (id, hive_id, marked_at, introduced_at, removed_at, replacement_reason, notes)
+		VALUES ($1, $2, '2028-01-01T00:00:00Z', '2028-01-01T00:00:00Z', NULL, 'LOW_EGG_LAYING', 'Invalid Active Reason')
 	`, thirdID, h.ID)
 	if err == nil {
 		t.Fatalf("expected check constraint violation on chk_hive_queens_active_has_no_replacement_reason")
@@ -1450,8 +1465,8 @@ func TestQueenRepository_Integration_PostgresConstraintsAndRollback(t *testing.T
 	// 4. Raw SQL check: chk_hive_queens_replacement_reason_valid
 	fourthID := uuid.New()
 	_, err = tx.Exec(ctx, `
-		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, replacement_reason, notes)
-		VALUES ($1, $2, 2029, '2029-01-01T00:00:00Z', '2029-06-01T00:00:00Z', 'INVALID_ENUM_STRING', 'Invalid Reason')
+		INSERT INTO hive_queens (id, hive_id, marked_at, introduced_at, removed_at, replacement_reason, notes)
+		VALUES ($1, $2, '2029-01-01T00:00:00Z', '2029-01-01T00:00:00Z', '2029-06-01T00:00:00Z', 'INVALID_ENUM_STRING', 'Invalid Reason')
 	`, fourthID, h.ID)
 	if err == nil {
 		t.Fatalf("expected check constraint violation on chk_hive_queens_replacement_reason_valid")
@@ -1461,8 +1476,8 @@ func TestQueenRepository_Integration_PostgresConstraintsAndRollback(t *testing.T
 	nonExistentHive := uuid.New()
 	fifthID := uuid.New()
 	_, err = tx.Exec(ctx, `
-		INSERT INTO hive_queens (id, hive_id, year, introduced_at, removed_at, notes)
-		VALUES ($1, $2, 2030, '2030-01-01T00:00:00Z', NULL, 'Orphan')
+		INSERT INTO hive_queens (id, hive_id, marked_at, introduced_at, removed_at, notes)
+		VALUES ($1, $2, '2030-01-01T00:00:00Z', '2030-01-01T00:00:00Z', NULL, 'Orphan')
 	`, fifthID, nonExistentHive)
 	if err == nil {
 		t.Fatalf("expected foreign key constraint violation on hive_queens_hive_id_fkey")
@@ -1490,17 +1505,17 @@ func TestQueenRepository_Integration_DeleteLatest_NonLatestRejectedAndFullRollba
 	}
 
 	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	qA := domainqueen.New(h.ID, tA, tA, nil, nil, "A")
 	_ = queenRepo.InsertInChain(ctx, qA, nil)
 
 	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonAB := domainqueen.ReasonLowEggLaying
-	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	qB := domainqueen.New(h.ID, tB, tB, nil, &reasonAB, "B")
 	_ = queenRepo.InsertInChain(ctx, qB, &reasonAB)
 
 	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonBC := domainqueen.ReasonAgingAndWear
-	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonBC, "C")
+	qC := domainqueen.New(h.ID, tC, tC, nil, &reasonBC, "C")
 	_ = queenRepo.InsertInChain(ctx, qC, &reasonBC)
 
 	// 1. Attempt non-latest delete: DELETE A -> ErrQueenNotLatest
@@ -1513,7 +1528,8 @@ func TestQueenRepository_Integration_DeleteLatest_NonLatestRejectedAndFullRollba
 		t.Fatalf("expected ErrQueenNotLatest for deleting B, got: %v", err)
 	}
 
-	// 3. DELETE C -> B rolls back to current, A's reason preserved
+	// 3. DELETE C -> B rolls back to current, her own reason cleared; A's own reason (why she
+	// was replaced by B) is preserved, untouched.
 	if err := queenRepo.DeleteLatest(ctx, h.ID, qC.ID); err != nil {
 		t.Fatalf("delete C: %v", err)
 	}
@@ -1521,8 +1537,15 @@ func TestQueenRepository_Integration_DeleteLatest_NonLatestRejectedAndFullRollba
 	if err != nil {
 		t.Fatalf("get current B: %v", err)
 	}
-	if curB.ID != qB.ID || curB.RemovedAt != nil || curB.ReplacementReason == nil || *curB.ReplacementReason != reasonAB {
+	if curB.ID != qB.ID || curB.RemovedAt != nil || curB.ReplacementReason != nil {
 		t.Fatalf("unexpected state for B after C deleted: %+v", curB)
+	}
+	gotA, err := queenRepo.GetByID(ctx, h.ID, qA.ID)
+	if err != nil {
+		t.Fatalf("get A after C deleted: %v", err)
+	}
+	if gotA.ReplacementReason == nil || *gotA.ReplacementReason != reasonAB {
+		t.Fatalf("expected A's own reason %s preserved, got: %v", reasonAB, gotA.ReplacementReason)
 	}
 
 	// 4. DELETE B -> A rolls back to current, A's reason cleared to NULL
@@ -1567,17 +1590,17 @@ func TestQueenRepository_Integration_ListHistory_LagOrdering(t *testing.T) {
 	}
 
 	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	qA := domainqueen.New(h.ID, 2025, nil, tA, nil, nil, "A")
+	qA := domainqueen.New(h.ID, tA, tA, nil, nil, "A")
 	_ = queenRepo.InsertInChain(ctx, qA, nil)
 
 	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonAB := domainqueen.ReasonLowEggLaying
-	qB := domainqueen.New(h.ID, 2026, nil, tB, nil, &reasonAB, "B")
+	qB := domainqueen.New(h.ID, tB, tB, nil, &reasonAB, "B")
 	_ = queenRepo.InsertInChain(ctx, qB, &reasonAB)
 
 	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	reasonBC := domainqueen.ReasonAgingAndWear
-	qC := domainqueen.New(h.ID, 2027, nil, tC, nil, &reasonBC, "C")
+	qC := domainqueen.New(h.ID, tC, tC, nil, &reasonBC, "C")
 	_ = queenRepo.InsertInChain(ctx, qC, &reasonBC)
 
 	list, err := queenRepo.ListHistoryByHiveID(ctx, h.ID)
@@ -1593,18 +1616,18 @@ func TestQueenRepository_Integration_ListHistory_LagOrdering(t *testing.T) {
 		t.Fatalf("expected order [C, B, A], got [%v, %v, %v]", list[0].ID, list[1].ID, list[2].ID)
 	}
 
-	// Incoming reasons via window LAG():
-	// C incoming = reasonBC (from B)
-	if list[0].ReplacementReason == nil || *list[0].ReplacementReason != reasonBC {
-		t.Fatalf("expected C incoming reason = %s, got: %v", reasonBC, list[0].ReplacementReason)
+	// Each row's own replacement_reason column, unshifted:
+	// C owns nil (current, never replaced)
+	if list[0].ReplacementReason != nil {
+		t.Fatalf("expected C's own reason = nil, got: %v", *list[0].ReplacementReason)
 	}
-	// B incoming = reasonAB (from A)
-	if list[1].ReplacementReason == nil || *list[1].ReplacementReason != reasonAB {
-		t.Fatalf("expected B incoming reason = %s, got: %v", reasonAB, list[1].ReplacementReason)
+	// B owns reasonBC (why she was replaced by C)
+	if list[1].ReplacementReason == nil || *list[1].ReplacementReason != reasonBC {
+		t.Fatalf("expected B's own reason = %s, got: %v", reasonBC, list[1].ReplacementReason)
 	}
-	// A incoming = nil (oldest)
-	if list[2].ReplacementReason != nil {
-		t.Fatalf("expected A incoming reason = nil, got: %v", list[2].ReplacementReason)
+	// A owns reasonAB (why she was replaced by B)
+	if list[2].ReplacementReason == nil || *list[2].ReplacementReason != reasonAB {
+		t.Fatalf("expected A's own reason = %s, got: %v", reasonAB, list[2].ReplacementReason)
 	}
 }
 
@@ -1637,12 +1660,12 @@ func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
 
 	// Initial queens
 	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	q1A := domainqueen.New(h1.ID, 2025, nil, t0, nil, nil, "H1 Initial")
+	q1A := domainqueen.New(h1.ID, t0, t0, nil, nil, "H1 Initial")
 	if err := queenRepo.InsertInChain(ctx, q1A, nil); err != nil {
 		t.Fatalf("insert q1A: %v", err)
 	}
 
-	q2A := domainqueen.New(h2.ID, 2025, nil, t0, nil, nil, "H2 Initial")
+	q2A := domainqueen.New(h2.ID, t0, t0, nil, nil, "H2 Initial")
 	if err := queenRepo.InsertInChain(ctx, q2A, nil); err != nil {
 		t.Fatalf("insert q2A: %v", err)
 	}
@@ -1654,7 +1677,7 @@ func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
 	go func() {
 		t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		r := domainqueen.ReasonLowEggLaying
-		q := domainqueen.New(h1.ID, 2026, nil, t1, nil, &r, "H1 Q2")
+		q := domainqueen.New(h1.ID, t1, t1, nil, &r, "H1 Q2")
 		done <- queenRepo.InsertInChain(context.Background(), q, &r)
 	}()
 
@@ -1662,7 +1685,7 @@ func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
 	go func() {
 		t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		r := domainqueen.ReasonNaturalSupersedure
-		q := domainqueen.New(h2.ID, 2026, nil, t1, nil, &r, "H2 Q2")
+		q := domainqueen.New(h2.ID, t1, t1, nil, &r, "H2 Q2")
 		done <- queenRepo.InsertInChain(context.Background(), q, &r)
 	}()
 
@@ -1671,7 +1694,7 @@ func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
 		time.Sleep(10 * time.Millisecond) // slight offset to simulate real race
 		t2 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 		r := domainqueen.ReasonAgingAndWear
-		q := domainqueen.New(h1.ID, 2027, nil, t2, nil, &r, "H1 Q3")
+		q := domainqueen.New(h1.ID, t2, t2, nil, &r, "H1 Q3")
 		done <- queenRepo.InsertInChain(context.Background(), q, &r)
 	}()
 
@@ -1680,7 +1703,7 @@ func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		t2 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 		r := domainqueen.ReasonBreedChangeOrAggressiveness
-		q := domainqueen.New(h2.ID, 2027, nil, t2, nil, &r, "H2 Q3")
+		q := domainqueen.New(h2.ID, t2, t2, nil, &r, "H2 Q3")
 		done <- queenRepo.InsertInChain(context.Background(), q, &r)
 	}()
 
@@ -1698,5 +1721,78 @@ func TestQueenRepository_Integration_ConcurrencyAdvisoryLock(t *testing.T) {
 	list2, err := queenRepo.ListHistoryByHiveID(ctx, h2.ID)
 	if err != nil || len(list2) != 3 {
 		t.Fatalf("H2 expected 3 queens, got %d (err: %v)", len(list2), err)
+	}
+}
+
+// TestQueenRepository_Integration_YearDerivedFromMarkedAt proves year has no
+// stored column any more: it is always computed from marked_at, which is
+// independent of introduced_at (a queen may be marked well before she is
+// introduced into this specific hive), and marked_at is required at the
+// database level.
+func TestQueenRepository_Integration_YearDerivedFromMarkedAt(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	hiveRepo := repopostgres.NewHiveRepository(tx)
+	queenRepo := repopostgres.NewQueenRepository(tx)
+
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	h := hive.New(userID, apiaryID, "Marking Year Hive", "")
+	if err := hiveRepo.Create(ctx, h); err != nil {
+		t.Fatalf("create hive: %v", err)
+	}
+
+	// markedAt (2025) is a full year before introducedAt (2026): a queen marked/raised
+	// before being introduced into this specific hive.
+	markedAt := time.Date(2025, 6, 10, 0, 0, 0, 0, time.UTC)
+	introducedAt := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+	q := domainqueen.New(h.ID, markedAt, introducedAt, nil, nil, "Marked before introduction")
+	if err := queenRepo.InsertInChain(ctx, q, nil); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := queenRepo.GetByID(ctx, h.ID, q.ID)
+	if err != nil {
+		t.Fatalf("get by id: %v", err)
+	}
+	if got.Year() != 2025 {
+		t.Fatalf("Year() = %d, want 2025 (from MarkedAt, not IntroducedAt's 2026)", got.Year())
+	}
+	if got.MarkingColor() != domainqueen.ColorBlue {
+		t.Fatalf("MarkingColor() = %s, want %s (2025's color)", got.MarkingColor(), domainqueen.ColorBlue)
+	}
+	if !got.IntroducedAt.Equal(introducedAt) {
+		t.Fatalf("IntroducedAt = %v, want %v (lifecycle position unaffected by MarkedAt)", got.IntroducedAt, introducedAt)
+	}
+
+	// The hive_queens table has no year column at all: it's derived, not stored.
+	var columnExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'hive_queens' AND column_name = 'year'
+		)
+	`).Scan(&columnExists); err != nil {
+		t.Fatalf("query information_schema: %v", err)
+	}
+	if columnExists {
+		t.Fatalf("hive_queens.year should not exist - year must be derived from marked_at, never persisted")
+	}
+
+	// marked_at is required at the database level (NOT NULL).
+	orphanID := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO hive_queens (id, hive_id, marked_at, introduced_at, removed_at, notes)
+		VALUES ($1, $2, NULL, '2026-01-01T00:00:00Z', NULL, 'Missing marked_at')
+	`, orphanID, h.ID)
+	if err == nil {
+		t.Fatalf("expected NOT NULL constraint violation on hive_queens.marked_at")
 	}
 }

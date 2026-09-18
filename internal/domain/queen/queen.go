@@ -89,12 +89,16 @@ func (r ReplacementReason) IsValid() bool {
 	}
 }
 
-// Queen represents a queen bee associated with a specific hive.
+// Queen represents a queen bee associated with a specific hive. MarkedAt and
+// IntroducedAt are deliberately independent: a queen may have been marked
+// (raised) before she was introduced into this specific hive. There is no
+// stored Year field - the marking year, and the color derived from it, are
+// always computed from MarkedAt, never persisted separately, so the two can
+// never drift out of sync.
 type Queen struct {
 	ID                uuid.UUID
 	HiveID            uuid.UUID
-	Year              int
-	MarkedAt          *time.Time
+	MarkedAt          time.Time
 	IntroducedAt      time.Time
 	RemovedAt         *time.Time
 	ReplacementReason *ReplacementReason
@@ -104,12 +108,11 @@ type Queen struct {
 }
 
 // New constructs a Queen with a freshly generated ID and timestamps set to now.
-func New(hiveID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, removedAt *time.Time, replacementReason *ReplacementReason, notes string) *Queen {
+func New(hiveID uuid.UUID, markedAt time.Time, introducedAt time.Time, removedAt *time.Time, replacementReason *ReplacementReason, notes string) *Queen {
 	now := time.Now().UTC()
 	return &Queen{
 		ID:                uuid.New(),
 		HiveID:            hiveID,
-		Year:              year,
 		MarkedAt:          markedAt,
 		IntroducedAt:      introducedAt,
 		RemovedAt:         removedAt,
@@ -120,14 +123,19 @@ func New(hiveID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time
 	}
 }
 
-// MarkingColor returns the calculated international marking color for the queen's year.
-func (q *Queen) MarkingColor() MarkingColor {
-	return ColorForYear(q.Year).Color
+// Year returns the marking year, derived from MarkedAt.
+func (q *Queen) Year() int {
+	return q.MarkedAt.Year()
 }
 
-// MarkingColorHex returns the calculated hex color string for the queen's year.
+// MarkingColor returns the calculated international marking color for the queen's marking year.
+func (q *Queen) MarkingColor() MarkingColor {
+	return ColorForYear(q.Year()).Color
+}
+
+// MarkingColorHex returns the calculated hex color string for the queen's marking year.
 func (q *Queen) MarkingColorHex() string {
-	return ColorForYear(q.Year).Hex
+	return ColorForYear(q.Year()).Hex
 }
 
 // IsCurrent reports whether the queen is currently active in the hive.

@@ -698,15 +698,26 @@ components:
 
     QueenResponse:
       type: object
-      required: [id, hiveId, year, markingColor, markingColorHex, introducedAt, notes, createdAt, updatedAt]
+      required: [id, hiveId, year, markingColor, markingColorHex, markedAt, introducedAt, notes, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
         hiveId: { type: string, format: uuid }
-        year: { type: integer, example: 2026 }
-        markingColor: { type: string, enum: [blue, white, yellow, red, green], example: white }
-        markingColorHex: { type: string, example: "#F8F9FA" }
-        markedAt: { type: string, format: date-time, nullable: true }
-        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
+        year:
+          type: integer
+          example: 2025
+          description: >
+            Marking year, always derived from markedAt - never accepted as input, and never
+            equal to the calendar year of introducedAt unless markedAt happens to fall in it.
+        markingColor: { type: string, enum: [blue, white, yellow, red, green], example: blue }
+        markingColorHex: { type: string, example: "#A7C7F7" }
+        markedAt:
+          type: string
+          format: date-time
+          example: "2025-06-10T00:00:00Z"
+          description: >
+            When this queen was marked/raised. Independent of introducedAt - a queen may be
+            marked well before she is introduced into this specific hive.
+        introducedAt: { type: string, format: date-time, example: "2026-04-15T00:00:00Z" }
         removedAt: { type: string, format: date-time, nullable: true }
         replacementReason:
           type: string
@@ -720,19 +731,27 @@ components:
             - BREED_CHANGE_OR_AGGRESSIVENESS
           example: LOW_EGG_LAYING
           description: >
-            Incoming transition reason describing why the predecessor queen's lifecycle ended.
-            Null for the oldest queen in the chain or when no replacement reason was provided.
+            Reason why THIS queen's own lifecycle ended, i.e. why she was replaced.
+            Null while this queen is current, or if she was never replaced.
         notes: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
     CreateQueenRequest:
       type: object
-      required: [year, introducedAt]
+      required: [markedAt, introducedAt]
+      description: >
+        There is no year field: the marking year is always derived from markedAt, never
+        accepted as input, so it can never drift from it.
       properties:
-        year: { type: integer, example: 2026 }
-        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
-        markedAt: { type: string, format: date-time, nullable: true }
+        markedAt:
+          type: string
+          format: date-time
+          example: "2025-06-10T00:00:00Z"
+          description: >
+            When this queen was marked/raised. Required, and independent of introducedAt -
+            a queen may be marked well before she is introduced into this specific hive.
+        introducedAt: { type: string, format: date-time, example: "2026-04-15T00:00:00Z" }
         replacementReason:
           type: string
           nullable: true
@@ -752,14 +771,20 @@ components:
 
     UpdateQueenRequest:
       type: object
-      required: [year, introducedAt]
+      required: [markedAt, introducedAt]
       description: >
-        Update queen metadata and/or timeline position (year, markedAt, introducedAt, replacementReason, notes).
-        Must remain strictly between previous and next neighbor in chain.
+        Update queen metadata and/or timeline position (markedAt, introducedAt, replacementReason, notes).
+        Must remain strictly between previous and next neighbor in chain. There is no year
+        field: the marking year is always derived from markedAt, never accepted as input.
       properties:
-        year: { type: integer, example: 2026 }
-        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
-        markedAt: { type: string, format: date-time, nullable: true }
+        markedAt:
+          type: string
+          format: date-time
+          example: "2025-06-10T00:00:00Z"
+          description: >
+            When this queen was marked/raised. Required, and independent of introducedAt -
+            a queen may be marked well before she is introduced into this specific hive.
+        introducedAt: { type: string, format: date-time, example: "2026-04-15T00:00:00Z" }
         replacementReason:
           type: string
           nullable: true
@@ -846,8 +871,7 @@ components:
                   - invalid_limit
                   - invalid_search
                   - invalid_sort_order
-                  - year_required
-                  - year_invalid
+                  - marked_at_required
                   - introduced_at_required
                   - timeline_invalid
                   - replacement_reason_invalid
