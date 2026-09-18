@@ -156,8 +156,8 @@ func TestQueen_Writability_Free_HiveOutsideLimit_UpdateBlocked(t *testing.T) {
 	freeSvc := buildFreeService(h, []uuid.UUID{}, true, queensRepo)
 
 	_, err = freeSvc.Update(context.Background(), userID, "token", h.ID, q.ID, appqueen.UpdateInput{
-		MarkedAt:     time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC),
-		IntroducedAt: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC),
+		MarkedAt:     time.Date(2015, 2, 1, 0, 0, 0, 0, time.UTC),
+		IntroducedAt: time.Date(2015, 2, 1, 0, 0, 0, 0, time.UTC),
 	})
 	if !errors.Is(err, appqueen.ErrReadOnly) {
 		t.Fatalf("Update on hive beyond limit: got %v, want ErrReadOnly", err)
@@ -219,8 +219,8 @@ func TestQueen_Writability_Free_ApiaryLocked_UpdateBlocked(t *testing.T) {
 	freeSvc := buildFreeService(h, []uuid.UUID{h.ID}, false, queensRepo)
 
 	_, err = freeSvc.Update(context.Background(), userID, "token", h.ID, q.ID, appqueen.UpdateInput{
-		MarkedAt:     time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC),
-		IntroducedAt: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC),
+		MarkedAt:     time.Date(2015, 2, 1, 0, 0, 0, 0, time.UTC),
+		IntroducedAt: time.Date(2015, 2, 1, 0, 0, 0, 0, time.UTC),
 	})
 	if !errors.Is(err, appqueen.ErrParentReadOnly) {
 		t.Fatalf("Update under locked apiary: got %v, want ErrParentReadOnly", err)

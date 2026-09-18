@@ -43,6 +43,9 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
 	}
+	if domainqueen.IsFutureCalendarDate(in.IntroducedAt) {
+		return nil, ErrIntroducedAtInFuture
+	}
 	if in.ReplacementReason != nil && !in.ReplacementReason.IsValid() {
 		return nil, ErrReplacementReasonInvalid
 	}
@@ -96,6 +99,9 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 	}
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
+	}
+	if domainqueen.IsFutureCalendarDate(in.IntroducedAt) {
+		return nil, ErrIntroducedAtInFuture
 	}
 	if in.HasReplacementReason && in.ReplacementReason != nil && !in.ReplacementReason.IsValid() {
 		return nil, ErrReplacementReasonInvalid

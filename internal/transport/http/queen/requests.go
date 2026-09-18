@@ -15,6 +15,7 @@ const maxNotesLength = 2000
 const (
 	CodeMarkedAtRequired            = "marked_at_required"
 	CodeIntroducedAtRequired        = "introduced_at_required"
+	CodeIntroducedAtInFuture        = "introduced_at_in_future"
 	CodeNotesTooLong                = "notes_too_long"
 	CodeTimelineInvalid             = "timeline_invalid"
 	CodeReplacementReasonInvalid    = "replacement_reason_invalid"
@@ -57,6 +58,8 @@ func (r *CreateRequest) Validate() map[string]string {
 	}
 	if r.IntroducedAt == nil || r.IntroducedAt.IsZero() {
 		fields["introducedAt"] = CodeIntroducedAtRequired
+	} else if domainqueen.IsFutureCalendarDate(*r.IntroducedAt) {
+		fields["introducedAt"] = CodeIntroducedAtInFuture
 	}
 	if r.ReplacementReason != nil && !domainqueen.ReplacementReason(*r.ReplacementReason).IsValid() {
 		fields["replacementReason"] = CodeReplacementReasonInvalid
@@ -102,6 +105,8 @@ func (r *UpdateRequest) Validate() map[string]string {
 	}
 	if r.IntroducedAt == nil || r.IntroducedAt.IsZero() {
 		fields["introducedAt"] = CodeIntroducedAtRequired
+	} else if domainqueen.IsFutureCalendarDate(*r.IntroducedAt) {
+		fields["introducedAt"] = CodeIntroducedAtInFuture
 	}
 	if r.HasReplacementReason && r.ReplacementReason != nil && !domainqueen.ReplacementReason(*r.ReplacementReason).IsValid() {
 		fields["replacementReason"] = CodeReplacementReasonInvalid

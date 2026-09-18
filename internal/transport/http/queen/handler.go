@@ -271,6 +271,8 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteValidationError(w, map[string]string{"markedAt": CodeMarkedAtRequired})
 	case errors.Is(err, appqueen.ErrIntroducedAtRequired):
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeIntroducedAtRequired})
+	case errors.Is(err, appqueen.ErrIntroducedAtInFuture):
+		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeIntroducedAtInFuture})
 	case errors.Is(err, appqueen.ErrTimelineInvalid):
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeTimelineInvalid})
 	case errors.Is(err, appqueen.ErrReplacementReasonInvalid):

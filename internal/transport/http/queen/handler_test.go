@@ -363,10 +363,10 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 
-	// 2. POST /queens -> creates 2025 queen (Blue)
+	// 2. POST /queens -> creates 2015 queen (Blue)
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2025-01-01T00:00:00Z",
-		"introducedAt": "2025-01-01T00:00:00Z",
+		"markedAt":     "2015-01-01T00:00:00Z",
+		"introducedAt": "2015-01-01T00:00:00Z",
 		"notes":        "First queen",
 	})
 	if rec.Code != http.StatusCreated {
@@ -377,21 +377,21 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if resp.Year != 2025 || resp.MarkingColor != "blue" || resp.MarkingColorHex != "#A7C7F7" {
+	if resp.Year != 2015 || resp.MarkingColor != "blue" || resp.MarkingColorHex != "#A7C7F7" {
 		t.Fatalf("unexpected color mapping in response: %+v", resp)
 	}
 	queen1ID := resp.ID
 
-	// 3. GET /queen -> returns 2025 queen
+	// 3. GET /queen -> returns 2015 queen
 	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queen", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
-	// 4. POST /queens with 2026 queen -> automatically closes previous and becomes current
+	// 4. POST /queens with 2016 queen -> automatically closes previous and becomes current
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2026-01-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2016-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
@@ -401,10 +401,10 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 	}
 	queen2ID := resp.ID
 
-	// 5. POST /queens with 2027 queen
+	// 5. POST /queens with 2017 queen
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2027-01-01T00:00:00Z",
-		"introducedAt": "2027-01-01T00:00:00Z",
+		"markedAt":     "2017-01-01T00:00:00Z",
+		"introducedAt": "2017-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rec.Code)
@@ -456,17 +456,17 @@ func TestQueenHTTP_EndToEndChain(t *testing.T) {
 
 	// 10. PUT /queens/{queen2ID} within bounds -> succeeds
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+queen2ID.String(), map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2026-06-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2016-06-01T00:00:00Z",
 		"notes":        "Updated queen2",
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for valid update, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify queen1's removed_at was updated to 2026-06-01
+	// Verify queen1's removed_at was updated to 2016-06-01
 	q1 := queenRepo.queens[queen1ID]
-	if q1.RemovedAt == nil || q1.RemovedAt.Format(time.RFC3339) != "2026-06-01T00:00:00Z" {
+	if q1.RemovedAt == nil || q1.RemovedAt.Format(time.RFC3339) != "2016-06-01T00:00:00Z" {
 		t.Fatalf("expected queen1 removed_at to be updated, got: %v", q1.RemovedAt)
 	}
 }
@@ -490,7 +490,7 @@ func TestQueenHTTP_Validation(t *testing.T) {
 
 	// markedAt missing: there is no year input any more - markedAt is required instead.
 	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"introducedAt": "2026-01-01T00:00:00Z",
+		"introducedAt": "2016-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing markedAt, got %d", rec.Code)
@@ -505,7 +505,7 @@ func TestQueenHTTP_Validation(t *testing.T) {
 	// any more (year is derived, not user input).
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
 		"markedAt":     "1990-01-01T00:00:00Z",
-		"introducedAt": "2026-01-01T00:00:00Z",
+		"introducedAt": "2016-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 for markedAt long before introducedAt, got %d: %s", rec.Code, rec.Body.String())
@@ -518,7 +518,7 @@ func TestQueenHTTP_Validation(t *testing.T) {
 
 	// Missing introducedAt
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt": "2026-01-01T00:00:00Z",
+		"markedAt": "2016-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing introducedAt, got %d", rec.Code)
@@ -526,6 +526,91 @@ func TestQueenHTTP_Validation(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &valErr)
 	if valErr.Error.Fields["introducedAt"] != "introduced_at_required" {
 		t.Fatalf("expected fields.introducedAt = introduced_at_required, got: %v", valErr.Error.Fields)
+	}
+}
+
+// TestQueenHTTP_IntroducedAtNotInFuture verifies that introducedAt cannot be
+// a calendar day after today, for both Create and Update, while today itself
+// remains valid.
+func TestQueenHTTP_IntroducedAtNotInFuture(t *testing.T) {
+	userID := uuid.New()
+	apiaryID := uuid.New()
+	hiveID := uuid.New()
+
+	h := domainhive.New(userID, apiaryID, "Hive Future", "")
+	h.ID = hiveID
+
+	router, _ := setupTestRouter(userID, h)
+
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	tomorrow := today.AddDate(0, 0, 1)
+	farFuture := today.AddDate(1, 0, 0)
+
+	var valErr struct {
+		Error struct {
+			Code   string            `json:"code"`
+			Fields map[string]string `json:"fields"`
+		} `json:"error"`
+	}
+
+	// Create: tomorrow is rejected with introduced_at_in_future.
+	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"markedAt":     today.Format(time.RFC3339),
+		"introducedAt": tomorrow.Format(time.RFC3339),
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Create tomorrow: expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &valErr)
+	if valErr.Error.Fields["introducedAt"] != "introduced_at_in_future" {
+		t.Fatalf("Create tomorrow: expected fields.introducedAt = introduced_at_in_future, got: %v", valErr.Error.Fields)
+	}
+
+	// Create: far future is also rejected.
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"markedAt":     today.Format(time.RFC3339),
+		"introducedAt": farFuture.Format(time.RFC3339),
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Create far future: expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &valErr)
+	if valErr.Error.Fields["introducedAt"] != "introduced_at_in_future" {
+		t.Fatalf("Create far future: expected fields.introducedAt = introduced_at_in_future, got: %v", valErr.Error.Fields)
+	}
+
+	// Create: today itself is valid.
+	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
+		"markedAt":     today.Format(time.RFC3339),
+		"introducedAt": today.Format(time.RFC3339),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("Create today: expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created queenhttp.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	// Update: tomorrow is rejected with introduced_at_in_future.
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+created.ID.String(), map[string]any{
+		"markedAt":     today.Format(time.RFC3339),
+		"introducedAt": tomorrow.Format(time.RFC3339),
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Update tomorrow: expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &valErr)
+	if valErr.Error.Fields["introducedAt"] != "introduced_at_in_future" {
+		t.Fatalf("Update tomorrow: expected fields.introducedAt = introduced_at_in_future, got: %v", valErr.Error.Fields)
+	}
+
+	// Update: today itself remains valid.
+	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+created.ID.String(), map[string]any{
+		"markedAt":     today.Format(time.RFC3339),
+		"introducedAt": today.Format(time.RFC3339),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Update today: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -540,13 +625,13 @@ func TestQueenHTTP_DuplicateIntroducedAt_Conflict(t *testing.T) {
 	router, _ := setupTestRouter(userID, h)
 
 	doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2025-01-01T00:00:00Z",
-		"introducedAt": "2025-01-01T00:00:00Z",
+		"markedAt":     "2015-01-01T00:00:00Z",
+		"introducedAt": "2015-01-01T00:00:00Z",
 	})
 
 	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2025-01-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2015-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409 for duplicate introducedAt, got %d", rec.Code)
@@ -563,28 +648,28 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	router, _ := setupTestRouter(userID, h)
 
-	// Create Q1 (2025-01-01)
+	// Create Q1 (2015-01-01)
 	rec1 := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2025-01-01T00:00:00Z",
-		"introducedAt": "2025-01-01T00:00:00Z",
+		"markedAt":     "2015-01-01T00:00:00Z",
+		"introducedAt": "2015-01-01T00:00:00Z",
 	})
 	var r1 queenhttp.Response
 	_ = json.Unmarshal(rec1.Body.Bytes(), &r1)
 	q1ID := r1.ID
 
-	// Create Q2 (2026-01-01)
+	// Create Q2 (2016-01-01)
 	rec2 := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2026-01-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2016-01-01T00:00:00Z",
 	})
 	var r2 queenhttp.Response
 	_ = json.Unmarshal(rec2.Body.Bytes(), &r2)
 	q2ID := r2.ID
 
-	// Create Q3 (2027-01-01)
+	// Create Q3 (2017-01-01)
 	rec3 := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2027-01-01T00:00:00Z",
-		"introducedAt": "2027-01-01T00:00:00Z",
+		"markedAt":     "2017-01-01T00:00:00Z",
+		"introducedAt": "2017-01-01T00:00:00Z",
 	})
 	var r3 queenhttp.Response
 	_ = json.Unmarshal(rec3.Body.Bytes(), &r3)
@@ -592,8 +677,8 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 1. Q2 equal to Q1 (exact equality with previous) -> 400 timeline_invalid
 	rec := doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q2ID.String(), map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2025-01-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2015-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for equal to previous, got %d", rec.Code)
@@ -610,8 +695,8 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 2. Q2 equal to Q3 (exact equality with next) -> 400 timeline_invalid
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q2ID.String(), map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2027-01-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2017-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for equal to next, got %d", rec.Code)
@@ -619,8 +704,8 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 3. Q1 (oldest) equal to Q2 -> 400 timeline_invalid
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q1ID.String(), map[string]any{
-		"markedAt":     "2025-01-01T00:00:00Z",
-		"introducedAt": "2026-01-01T00:00:00Z",
+		"markedAt":     "2015-01-01T00:00:00Z",
+		"introducedAt": "2016-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oldest equal to next, got %d", rec.Code)
@@ -628,31 +713,31 @@ func TestQueenHTTP_UpdateIntroducedAt_StrictBounds(t *testing.T) {
 
 	// 4. Q3 (latest) equal to Q2 -> 400 timeline_invalid
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q3ID.String(), map[string]any{
-		"markedAt":     "2027-01-01T00:00:00Z",
-		"introducedAt": "2026-01-01T00:00:00Z",
+		"markedAt":     "2017-01-01T00:00:00Z",
+		"introducedAt": "2016-01-01T00:00:00Z",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for latest equal to previous, got %d", rec.Code)
 	}
 
-	// 5. Valid Q2 update: 2026-04-01 -> 200 OK
+	// 5. Valid Q2 update: 2016-04-01 -> 200 OK
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+q2ID.String(), map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2026-04-01T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2016-04-01T00:00:00Z",
 		"notes":        "April Q2",
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for valid update, got %d", rec.Code)
 	}
 
-	// 6. Verify Q1's removed_at via GET /queens/{q1ID} is now 2026-04-01
+	// 6. Verify Q1's removed_at via GET /queens/{q1ID} is now 2016-04-01
 	rec = doRequest(router, http.MethodGet, "/api/v1/hives/"+hiveID.String()+"/queens/"+q1ID.String(), nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for get Q1, got %d", rec.Code)
 	}
 	var getQ1 queenhttp.Response
 	_ = json.Unmarshal(rec.Body.Bytes(), &getQ1)
-	if getQ1.RemovedAt == nil || getQ1.RemovedAt.Format(time.RFC3339) != "2026-04-01T00:00:00Z" {
+	if getQ1.RemovedAt == nil || getQ1.RemovedAt.Format(time.RFC3339) != "2016-04-01T00:00:00Z" {
 		t.Fatalf("Q1 removedAt not recalculated: %v", getQ1.RemovedAt)
 	}
 }
@@ -674,8 +759,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 1. POST first queen with replacementReason -> 400 replacement_reason_not_allowed
 	rec := doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":          "2025-01-01T00:00:00Z",
-		"introducedAt":      "2025-04-10T00:00:00Z",
+		"markedAt":          "2015-01-01T00:00:00Z",
+		"introducedAt":      "2015-04-10T00:00:00Z",
 		"replacementReason": "LOW_EGG_LAYING",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -693,8 +778,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 2. POST with invalid enum -> 400 replacement_reason_invalid
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":          "2025-01-01T00:00:00Z",
-		"introducedAt":      "2025-04-10T00:00:00Z",
+		"markedAt":          "2015-01-01T00:00:00Z",
+		"introducedAt":      "2015-04-10T00:00:00Z",
 		"replacementReason": "INVALID_ENUM_CODE",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -707,8 +792,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 3. POST first queen without reason -> 201, replacementReason == null
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":     "2025-01-01T00:00:00Z",
-		"introducedAt": "2025-04-10T00:00:00Z",
+		"markedAt":     "2015-01-01T00:00:00Z",
+		"introducedAt": "2015-04-10T00:00:00Z",
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
@@ -723,8 +808,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	// qA (the predecessor) was replaced, so qA owns it; qB's own reason stays null (she hasn't
 	// been replaced yet).
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":          "2026-01-01T00:00:00Z",
-		"introducedAt":      "2026-05-15T00:00:00Z",
+		"markedAt":          "2016-01-01T00:00:00Z",
+		"introducedAt":      "2016-05-15T00:00:00Z",
 		"replacementReason": "LOW_EGG_LAYING",
 	})
 	if rec.Code != http.StatusCreated {
@@ -749,8 +834,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 5. PUT oldest queen qA with replacementReason -> 400 replacement_reason_not_allowed
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qA.ID.String(), map[string]any{
-		"markedAt":          "2025-01-01T00:00:00Z",
-		"introducedAt":      "2025-04-10T00:00:00Z",
+		"markedAt":          "2015-01-01T00:00:00Z",
+		"introducedAt":      "2015-04-10T00:00:00Z",
 		"replacementReason": "AGING_AND_WEAR",
 	})
 	if rec.Code != http.StatusBadRequest {
@@ -764,8 +849,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	// 6. PUT current queen qB with replacementReason: "DISEASE_OR_POOR_QUALITY" -> 200 OK.
 	// This edits why qA (qB's predecessor) was replaced, so it writes qA's row, not qB's own.
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"markedAt":          "2026-01-01T00:00:00Z",
-		"introducedAt":      "2026-05-15T00:00:00Z",
+		"markedAt":          "2016-01-01T00:00:00Z",
+		"introducedAt":      "2016-05-15T00:00:00Z",
 		"replacementReason": "DISEASE_OR_POOR_QUALITY",
 	})
 	if rec.Code != http.StatusOK {
@@ -784,8 +869,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 7. PUT qB with omitted replacementReason -> 200 OK, preserves qA's existing reason
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"markedAt":     "2026-01-01T00:00:00Z",
-		"introducedAt": "2026-05-15T00:00:00Z",
+		"markedAt":     "2016-01-01T00:00:00Z",
+		"introducedAt": "2016-05-15T00:00:00Z",
 		"notes":        "Updated notes",
 	})
 	if rec.Code != http.StatusOK {
@@ -803,8 +888,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 
 	// 8. PUT qB with replacementReason: null -> 200 OK, clears qA's reason
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"markedAt":          "2026-01-01T00:00:00Z",
-		"introducedAt":      "2026-05-15T00:00:00Z",
+		"markedAt":          "2016-01-01T00:00:00Z",
+		"introducedAt":      "2016-05-15T00:00:00Z",
 		"replacementReason": nil,
 	})
 	if rec.Code != http.StatusOK {
@@ -823,8 +908,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	// 9. Introduce qC with reason describing why qB (its predecessor) was replaced -> 201.
 	// qC's own reason stays null; qB now owns NATURAL_SUPERSEDURE.
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":          "2027-01-01T00:00:00Z",
-		"introducedAt":      "2027-04-20T00:00:00Z",
+		"markedAt":          "2017-01-01T00:00:00Z",
+		"introducedAt":      "2017-04-20T00:00:00Z",
 		"replacementReason": "NATURAL_SUPERSEDURE",
 	})
 	if rec.Code != http.StatusCreated {
@@ -840,8 +925,8 @@ func TestQueenHTTP_ReplacementReason(t *testing.T) {
 	// predecessor) was replaced, so it writes qA's row. qB's own reason (NATURAL_SUPERSEDURE,
 	// describing why she herself was later replaced by qC) is untouched.
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+qB.ID.String(), map[string]any{
-		"markedAt":          "2026-01-01T00:00:00Z",
-		"introducedAt":      "2026-05-15T00:00:00Z",
+		"markedAt":          "2016-01-01T00:00:00Z",
+		"introducedAt":      "2016-05-15T00:00:00Z",
 		"replacementReason": "INJURY_OR_MUTILATION",
 	})
 	if rec.Code != http.StatusOK {
@@ -919,12 +1004,12 @@ func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
 
 	// 2. Client attempts to pass markingColor, markingColorHex, removedAt in POST
 	rec = doRequest(router, http.MethodPost, "/api/v1/hives/"+hiveID.String()+"/queens", map[string]any{
-		"markedAt":        "2026-01-01T00:00:00Z",
-		"introducedAt":    "2026-05-01T00:00:00Z",
+		"markedAt":        "2016-01-01T00:00:00Z",
+		"introducedAt":    "2016-05-01T00:00:00Z",
 		"markingColor":    "red",                  // Backend-controlled; client override should be ignored
 		"markingColorHex": "#FF0000",              // Backend-controlled; client override should be ignored
-		"removedAt":       "2026-08-01T00:00:00Z", // Backend-controlled; client override should be ignored
-		"notes":           "Queen 2026",
+		"removedAt":       "2016-08-01T00:00:00Z", // Backend-controlled; client override should be ignored
+		"notes":           "Queen 2016",
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
@@ -958,10 +1043,10 @@ func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
 		t.Fatalf("embedded currentQueen (%+v) does not match dedicated endpoint (%+v)", *hiveWithQ.CurrentQueen, dedicatedQ)
 	}
 
-	// 4. PUT year 2026 -> 2027 changes derived marking color to yellow (#FFE08A)
+	// 4. PUT year 2016 -> 2017 changes derived marking color to yellow (#FFE08A)
 	rec = doRequest(router, http.MethodPut, "/api/v1/hives/"+hiveID.String()+"/queens/"+createdQ.ID.String(), map[string]any{
-		"markedAt":        "2027-01-01T00:00:00Z",
-		"introducedAt":    "2026-05-01T00:00:00Z",
+		"markedAt":        "2017-01-01T00:00:00Z",
+		"introducedAt":    "2016-05-01T00:00:00Z",
 		"markingColor":    "blue",
 		"markingColorHex": "#0000FF",
 	})
@@ -970,7 +1055,7 @@ func TestQueenHTTP_ColorAndBackendControlledFieldsAndEmbedding(t *testing.T) {
 	}
 	var updatedQ queenhttp.Response
 	_ = json.Unmarshal(rec.Body.Bytes(), &updatedQ)
-	if updatedQ.Year != 2027 || updatedQ.MarkingColor != "yellow" || updatedQ.MarkingColorHex != "#FFE08A" {
+	if updatedQ.Year != 2017 || updatedQ.MarkingColor != "yellow" || updatedQ.MarkingColorHex != "#FFE08A" {
 		t.Errorf("PUT year did not update derived color: got year=%d, color=%s, hex=%s", updatedQ.Year, updatedQ.MarkingColor, updatedQ.MarkingColorHex)
 	}
 }
@@ -1074,8 +1159,8 @@ func TestQueenHTTP_WritabilityEntitlement(t *testing.T) {
 	}
 
 	createBody := map[string]any{
-		"markedAt":     "2025-01-01T00:00:00Z",
-		"introducedAt": "2025-01-01T00:00:00Z",
+		"markedAt":     "2015-01-01T00:00:00Z",
+		"introducedAt": "2015-01-01T00:00:00Z",
 	}
 
 	// errorCode extracts resp.error.code from a WriteError body.
@@ -1149,7 +1234,7 @@ func TestQueenHTTP_WritabilityEntitlement(t *testing.T) {
 
 		rec = doRequest(freeRouter, http.MethodPut,
 			"/api/v1/hives/"+h.ID.String()+"/queens/"+q.ID.String(),
-			map[string]any{"markedAt": "2025-01-01T00:00:00Z", "introducedAt": "2025-02-01T00:00:00Z"})
+			map[string]any{"markedAt": "2015-01-01T00:00:00Z", "introducedAt": "2015-02-01T00:00:00Z"})
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("Free Update beyond limit: got %d: %s", rec.Code, rec.Body.String())
 		}

@@ -15,6 +15,11 @@ var (
 	// ErrIntroducedAtRequired is returned when introduced_at is empty or zero.
 	ErrIntroducedAtRequired = errors.New("introduced_at is required")
 
+	// ErrIntroducedAtInFuture is returned when introduced_at falls on a calendar
+	// day after today: a queen cannot be introduced into a hive before that day
+	// arrives. Today itself is always valid.
+	ErrIntroducedAtInFuture = errors.New("introduced_at must not be in the future")
+
 	// ErrMarkedAtRequired is returned when marked_at is empty or zero. A queen may be
 	// marked before she is introduced into this specific hive, so marked_at is
 	// validated independently of introduced_at - there is no ordering requirement

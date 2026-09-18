@@ -128,6 +128,19 @@ func (q *Queen) Year() int {
 	return q.MarkedAt.Year()
 }
 
+// IsFutureCalendarDate reports whether t falls on a calendar day after
+// today, both taken in UTC - so today itself is always valid regardless of
+// the time of day, and only a strictly later date is rejected. Shared by
+// both the HTTP validation layer (immediate 400) and the application
+// service (defense in depth) so introducedAt's "not in the future" rule
+// can never drift between the two.
+func IsFutureCalendarDate(t time.Time) bool {
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return day.After(today)
+}
+
 // MarkingColor returns the calculated international marking color for the queen's marking year.
 func (q *Queen) MarkingColor() MarkingColor {
 	return ColorForYear(q.Year()).Color

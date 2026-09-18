@@ -751,7 +751,13 @@ components:
           description: >
             When this queen was marked/raised. Required, and independent of introducedAt -
             a queen may be marked well before she is introduced into this specific hive.
-        introducedAt: { type: string, format: date-time, example: "2026-04-15T00:00:00Z" }
+        introducedAt:
+          type: string
+          format: date-time
+          example: "2026-04-15T00:00:00Z"
+          description: >
+            Must not fall on a calendar day after today (introduced_at_in_future otherwise).
+            Today itself is always valid.
         replacementReason:
           type: string
           nullable: true
@@ -784,7 +790,13 @@ components:
           description: >
             When this queen was marked/raised. Required, and independent of introducedAt -
             a queen may be marked well before she is introduced into this specific hive.
-        introducedAt: { type: string, format: date-time, example: "2026-04-15T00:00:00Z" }
+        introducedAt:
+          type: string
+          format: date-time
+          example: "2026-04-15T00:00:00Z"
+          description: >
+            Must not fall on a calendar day after today (introduced_at_in_future otherwise).
+            Today itself is always valid.
         replacementReason:
           type: string
           nullable: true
@@ -873,6 +885,7 @@ components:
                   - invalid_sort_order
                   - marked_at_required
                   - introduced_at_required
+                  - introduced_at_in_future
                   - timeline_invalid
                   - replacement_reason_invalid
                   - replacement_reason_not_allowed

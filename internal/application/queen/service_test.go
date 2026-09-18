@@ -294,7 +294,7 @@ func setupTest(t *testing.T) (*appqueen.Service, *fakeQueenRepo, *fakeHiveRepo, 
 
 func TestService_CreateFirstQueen(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	intro := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
+	intro := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
 
 	q, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{
 		MarkedAt:     intro,
@@ -315,10 +315,64 @@ func TestService_CreateFirstQueen(t *testing.T) {
 	}
 }
 
+// TestService_IntroducedAtNotInFuture verifies that Create and Update both
+// reject an introducedAt that falls on a calendar day after today, while
+// today itself remains valid, and that the failure surfaces as
+// ErrIntroducedAtInFuture.
+func TestService_IntroducedAtNotInFuture(t *testing.T) {
+	svc, _, _, userID, hiveID := setupTest(t)
+
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	tomorrow := today.AddDate(0, 0, 1)
+	farFuture := today.AddDate(1, 0, 0)
+
+	// Create: tomorrow is rejected.
+	if _, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{
+		MarkedAt:     today,
+		IntroducedAt: tomorrow,
+	}); !errors.Is(err, appqueen.ErrIntroducedAtInFuture) {
+		t.Fatalf("Create tomorrow: got %v, want ErrIntroducedAtInFuture", err)
+	}
+
+	// Create: far future is rejected.
+	if _, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{
+		MarkedAt:     today,
+		IntroducedAt: farFuture,
+	}); !errors.Is(err, appqueen.ErrIntroducedAtInFuture) {
+		t.Fatalf("Create far future: got %v, want ErrIntroducedAtInFuture", err)
+	}
+
+	// Create: today itself is valid.
+	q, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{
+		MarkedAt:     today,
+		IntroducedAt: today,
+	})
+	if err != nil {
+		t.Fatalf("Create today: unexpected error: %v", err)
+	}
+
+	// Update: tomorrow is rejected.
+	if _, err := svc.Update(context.Background(), userID, "token", hiveID, q.ID, appqueen.UpdateInput{
+		MarkedAt:     today,
+		IntroducedAt: tomorrow,
+	}); !errors.Is(err, appqueen.ErrIntroducedAtInFuture) {
+		t.Fatalf("Update tomorrow: got %v, want ErrIntroducedAtInFuture", err)
+	}
+
+	// Update: today itself remains valid.
+	if _, err := svc.Update(context.Background(), userID, "token", hiveID, q.ID, appqueen.UpdateInput{
+		MarkedAt:     today,
+		IntroducedAt: today,
+	}); err != nil {
+		t.Fatalf("Update today: unexpected error: %v", err)
+	}
+}
+
 func TestService_AppendNewerQueen_ClosesPrevious(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	introA := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-	introB := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	introA := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+	introB := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 	qA, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{
 		MarkedAt:     introA,
@@ -353,9 +407,9 @@ func TestService_AppendNewerQueen_ClosesPrevious(t *testing.T) {
 
 func TestService_AppendMultiple_StrictChain(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	qA, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 	qB, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tB, IntroducedAt: tB})
@@ -386,9 +440,9 @@ func TestService_AppendMultiple_StrictChain(t *testing.T) {
 
 func TestService_RetroactiveMiddleInsertion(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	qA, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 	qC, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tC, IntroducedAt: tC})
@@ -419,9 +473,9 @@ func TestService_RetroactiveMiddleInsertion(t *testing.T) {
 
 func TestService_InsertOldest(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tB, IntroducedAt: tB})
 	svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tC, IntroducedAt: tC})
@@ -439,7 +493,7 @@ func TestService_InsertOldest(t *testing.T) {
 
 func TestService_DuplicateIntroducedAt_Rejected(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	intro := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	intro := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	_, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: intro, IntroducedAt: intro})
 	if err != nil {
@@ -454,16 +508,16 @@ func TestService_DuplicateIntroducedAt_Rejected(t *testing.T) {
 
 func TestService_UpdateIntroducedAt_WithinBounds(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	qA, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 	qB, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tB, IntroducedAt: tB})
 	svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tC, IntroducedAt: tC})
 
 	// Move B to 2026-06-01 (strictly between 2025-01-01 and 2027-01-01)
-	newTB := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	newTB := time.Date(2016, 6, 1, 0, 0, 0, 0, time.UTC)
 	updatedB, err := svc.Update(context.Background(), userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 		MarkedAt:     newTB,
 		IntroducedAt: newTB,
@@ -485,16 +539,16 @@ func TestService_UpdateIntroducedAt_WithinBounds(t *testing.T) {
 
 func TestService_UpdateIntroducedAt_ViolatingBounds_Rejected(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 	qB, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tB, IntroducedAt: tB})
 	svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tC, IntroducedAt: tC})
 
 	// Try moving B before A (2024-12-01)
-	invalidBefore := time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC)
+	invalidBefore := time.Date(2014, 12, 1, 0, 0, 0, 0, time.UTC)
 	_, err := svc.Update(context.Background(), userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 		MarkedAt:     invalidBefore,
 		IntroducedAt: invalidBefore,
@@ -504,7 +558,7 @@ func TestService_UpdateIntroducedAt_ViolatingBounds_Rejected(t *testing.T) {
 	}
 
 	// Try moving B after C (2028-01-01)
-	invalidAfter := time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC)
+	invalidAfter := time.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC)
 	_, err = svc.Update(context.Background(), userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 		MarkedAt:     invalidAfter,
 		IntroducedAt: invalidAfter,
@@ -516,9 +570,9 @@ func TestService_UpdateIntroducedAt_ViolatingBounds_Rejected(t *testing.T) {
 
 func TestService_DeleteLatest_RollbackPredecessor(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	qA, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 	qB, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tB, IntroducedAt: tB})
@@ -569,9 +623,9 @@ func TestService_DeleteLatest_RollbackPredecessor(t *testing.T) {
 
 func TestService_DeleteNonLatest_FailsWithQueenNotLatest(t *testing.T) {
 	svc, _, _, userID, hiveID := setupTest(t)
-	tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+	tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	qA, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 	qB, _ := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tB, IntroducedAt: tB})
@@ -618,7 +672,7 @@ func TestService_FreeTierRestrictions(t *testing.T) {
 	subs := &fakeSubscriptionClient{entitlement: apphive.EntitlementFree}
 
 	svc := appqueen.NewService(queens, hives, apiaries, subs)
-	intro := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	intro := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	_, err := svc.Create(context.Background(), userID, "token", hiveID, appqueen.CreateInput{
 		MarkedAt:     intro,
@@ -635,9 +689,9 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	setupChain := func(t *testing.T) (*appqueen.Service, uuid.UUID, uuid.UUID, *domainqueen.Queen, *domainqueen.Queen, *domainqueen.Queen) {
 		t.Helper()
 		svc, _, _, userID, hiveID := setupTest(t)
-		tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+		tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, err := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA, Notes: "Queen A"})
 		if err != nil {
@@ -657,7 +711,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	// Case 1 & 11: Middle queen moved within bounds -> succeeds and recalculates predecessor's removed_at
 	t.Run("Case 1 & 11: Middle queen within bounds updates predecessor removed_at", func(t *testing.T) {
 		svc, userID, hiveID, qA, qB, qC := setupChain(t)
-		newB := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+		newB := time.Date(2016, 4, 1, 0, 0, 0, 0, time.UTC)
 
 		updatedB, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 			MarkedAt:     newB,
@@ -683,7 +737,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	// Case 2: Middle queen moved before previous -> rejected
 	t.Run("Case 2: Middle queen moved before previous is rejected", func(t *testing.T) {
 		svc, userID, hiveID, _, qB, _ := setupChain(t)
-		beforeA := time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC)
+		beforeA := time.Date(2014, 12, 1, 0, 0, 0, 0, time.UTC)
 
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 			MarkedAt:     beforeA,
@@ -710,7 +764,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	// Case 4: Middle queen moved after next -> rejected
 	t.Run("Case 4: Middle queen moved after next is rejected", func(t *testing.T) {
 		svc, userID, hiveID, _, qB, _ := setupChain(t)
-		afterC := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
+		afterC := time.Date(2017, 6, 1, 0, 0, 0, 0, time.UTC)
 
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 			MarkedAt:     afterC,
@@ -737,7 +791,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	// Case 6: Oldest queen moved while still before next -> succeeds
 	t.Run("Case 6: Oldest queen moved before next succeeds", func(t *testing.T) {
 		svc, userID, hiveID, qA, qB, _ := setupChain(t)
-		newA := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC) // still before B (2026-01-01)
+		newA := time.Date(2015, 6, 1, 0, 0, 0, 0, time.UTC) // still before B (2026-01-01)
 
 		updatedA, err := svc.Update(ctx, userID, "token", hiveID, qA.ID, appqueen.UpdateInput{
 			MarkedAt:     newA,
@@ -768,7 +822,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 		}
 
 		// After B
-		afterB := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+		afterB := time.Date(2016, 6, 1, 0, 0, 0, 0, time.UTC)
 		_, err = svc.Update(ctx, userID, "token", hiveID, qA.ID, appqueen.UpdateInput{
 			MarkedAt:     afterB,
 			IntroducedAt: afterB,
@@ -781,7 +835,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	// Case 8: Latest/current queen moved while still after previous -> succeeds
 	t.Run("Case 8: Latest queen moved after previous succeeds", func(t *testing.T) {
 		svc, userID, hiveID, _, qB, qC := setupChain(t)
-		newC := time.Date(2027, 8, 1, 0, 0, 0, 0, time.UTC) // still after B (2026-01-01)
+		newC := time.Date(2017, 8, 1, 0, 0, 0, 0, time.UTC) // still after B (2026-01-01)
 
 		updatedC, err := svc.Update(ctx, userID, "token", hiveID, qC.ID, appqueen.UpdateInput{
 			MarkedAt:     newC,
@@ -817,7 +871,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 		}
 
 		// Before B
-		beforeB := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+		beforeB := time.Date(2015, 6, 1, 0, 0, 0, 0, time.UTC)
 		_, err = svc.Update(ctx, userID, "token", hiveID, qC.ID, appqueen.UpdateInput{
 			MarkedAt:     beforeB,
 			IntroducedAt: beforeB,
@@ -830,7 +884,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 	// Case 10: Single queen -> introducedAt may be changed freely
 	t.Run("Case 10: Single queen introducedAt changed freely", func(t *testing.T) {
 		svc, _, _, userID, hiveID := setupTest(t)
-		initialDate := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		initialDate := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
 		q, err := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{
 			MarkedAt:     initialDate,
 			IntroducedAt: initialDate,
@@ -840,7 +894,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 		}
 
 		// Change to past
-		pastDate := time.Date(2020, 5, 1, 0, 0, 0, 0, time.UTC)
+		pastDate := time.Date(2010, 5, 1, 0, 0, 0, 0, time.UTC)
 		up1, err := svc.Update(ctx, userID, "token", hiveID, q.ID, appqueen.UpdateInput{
 			MarkedAt:     pastDate,
 			IntroducedAt: pastDate,
@@ -853,7 +907,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 		}
 
 		// Change to future
-		futureDate := time.Date(2035, 10, 1, 0, 0, 0, 0, time.UTC)
+		futureDate := time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC)
 		up2, err := svc.Update(ctx, userID, "token", hiveID, q.ID, appqueen.UpdateInput{
 			MarkedAt:     futureDate,
 			IntroducedAt: futureDate,
@@ -878,8 +932,8 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 
 		// Valid edit within bounds
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
-			MarkedAt:     time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
-			IntroducedAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+			MarkedAt:     time.Date(2016, 8, 1, 0, 0, 0, 0, time.UTC),
+			IntroducedAt: time.Date(2016, 8, 1, 0, 0, 0, 0, time.UTC),
 		})
 		if err != nil {
 			t.Fatalf("valid update failed: %v", err)
@@ -893,8 +947,8 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 
 		// Attempt reordering edit (B moved after C): must be rejected, preserving order
 		_, err = svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
-			MarkedAt:     time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC),
-			IntroducedAt: time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC),
+			MarkedAt:     time.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC),
+			IntroducedAt: time.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC),
 		})
 		if !errors.Is(err, domainqueen.ErrTimelineInvalid) {
 			t.Errorf("expected ErrTimelineInvalid for reorder attempt, got %v", err)
@@ -916,8 +970,8 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 
 		// Invalid update: B after C
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
-			MarkedAt:     time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC),
-			IntroducedAt: time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC),
+			MarkedAt:     time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC),
+			IntroducedAt: time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC),
 			Notes:        "Corrupted B",
 		})
 		if !errors.Is(err, domainqueen.ErrTimelineInvalid) {
@@ -953,7 +1007,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 			UpdatedAt: time.Now().UTC(),
 		}
 
-		sharedTimestamp := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+		sharedTimestamp := time.Date(2016, 5, 1, 0, 0, 0, 0, time.UTC)
 		q1, err := svc.Create(ctx, userID, "token", hive1, appqueen.CreateInput{MarkedAt: sharedTimestamp, IntroducedAt: sharedTimestamp})
 		if err != nil {
 			t.Fatalf("create in hive1 failed: %v", err)
@@ -964,7 +1018,7 @@ func TestService_IntroducedAt_StrictBoundsAudit_14Cases(t *testing.T) {
 		}
 
 		// Update both to another shared timestamp
-		anotherShared := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		anotherShared := time.Date(2016, 7, 1, 0, 0, 0, 0, time.UTC)
 		up1, err := svc.Update(ctx, userID, "token", hive1, q1.ID, appqueen.UpdateInput{MarkedAt: anotherShared, IntroducedAt: anotherShared})
 		if err != nil {
 			t.Fatalf("update hive1 failed: %v", err)
@@ -992,8 +1046,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 1: Create B with reason X stores X on A, not B
 	t.Run("Case 1: Create B with reason X stores X on A, not B", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		qA, err := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		if err != nil {
@@ -1031,8 +1085,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 2: Edit B reason X -> Y updates A to Y, not B
 	t.Run("Case 2: Edit B reason X -> Y updates A to Y, not B", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonLowEgg})
@@ -1064,8 +1118,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 3: Edit B reason to explicit null clears A
 	t.Run("Case 3: Edit B reason to explicit null clears A", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonLowEgg})
@@ -1091,8 +1145,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 4: Editing B without replacementReason does not accidentally clear A
 	t.Run("Case 4: Editing B without replacementReason does not accidentally clear A", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonLowEgg})
@@ -1120,9 +1174,9 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 5: Edit C reason updates B, not C
 	t.Run("Case 5: Edit C reason updates B, not C", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
-		t3 := time.Date(2027, 4, 20, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 4, 20, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})
@@ -1159,8 +1213,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 6: Current C may provide replacementReason through PUT because it controls B->C
 	t.Run("Case 6: Current C may provide replacementReason through PUT", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2})
@@ -1187,8 +1241,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 7: C itself always remains replacement_reason = NULL while current
 	t.Run("Case 7: C itself always remains replacement_reason = NULL while current", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		_, _ = svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonLowEgg})
@@ -1211,8 +1265,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 8: Oldest A cannot receive a non-null incoming replacement reason
 	t.Run("Case 8: Oldest A cannot receive a non-null incoming replacement reason", func(t *testing.T) {
 		svc, _, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		_, _ = svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2})
@@ -1243,15 +1297,15 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 9: Edit B introducedAt within bounds still updates A.removed_at correctly
 	t.Run("Case 9: Edit B introducedAt within bounds still updates A.removed_at correctly", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		t3 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})
 		_, _ = svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t3, IntroducedAt: t3})
 
-		newBIntro := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+		newBIntro := time.Date(2016, 6, 1, 0, 0, 0, 0, time.UTC)
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 			MarkedAt:             newBIntro,
 			IntroducedAt:         newBIntro,
@@ -1269,15 +1323,15 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 10: Edit B introducedAt + replacement reason atomically updates A boundary and A reason
 	t.Run("Case 10: Edit B introducedAt + replacement reason atomically updates A boundary and A reason", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		t3 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})
 		_, _ = svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t3, IntroducedAt: t3})
 
-		newBIntro := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		newBIntro := time.Date(2016, 7, 1, 0, 0, 0, 0, time.UTC)
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
 			MarkedAt:             newBIntro,
 			IntroducedAt:         newBIntro,
@@ -1299,15 +1353,15 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 11: Invalid B introducedAt leaves A reason and all chain boundaries unchanged
 	t.Run("Case 11: Invalid B introducedAt leaves A reason and chain boundaries unchanged", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})
 
 		_, err := svc.Update(ctx, userID, "token", hiveID, qB.ID, appqueen.UpdateInput{
-			MarkedAt:             time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-			IntroducedAt:         time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+			MarkedAt:             time.Date(2014, 1, 1, 0, 0, 0, 0, time.UTC),
+			IntroducedAt:         time.Date(2014, 1, 1, 0, 0, 0, 0, time.UTC),
 			ReplacementReason:    &reasonLowEgg,
 			HasReplacementReason: true,
 		})
@@ -1326,9 +1380,9 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 12 & 13: DELETE C clears both B.removed_at and B.replacement_reason (B becomes current with both fields NULL)
 	t.Run("Case 12 & 13: DELETE C clears both B.removed_at and B.replacement_reason", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		t3 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})
@@ -1354,9 +1408,9 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 14: Repeated DELETE C -> DELETE B clears each removed transition's reason correctly
 	t.Run("Case 14: Repeated DELETE C -> DELETE B clears each removed transition reason correctly", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		t3 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})
@@ -1391,9 +1445,9 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 15: Retroactive middle insertion does not transfer an obsolete A->C reason to B->C
 	t.Run("Case 15: Retroactive middle insertion does not transfer obsolete A->C reason to B->C", func(t *testing.T) {
 		svc, queens, _, userID, hiveID := setupTest(t)
-		tA := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		tC := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
-		tB := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		tA := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		tC := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
+		tB := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tA, IntroducedAt: tA})
 		qC, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: tC, IntroducedAt: tC, ReplacementReason: &reasonSupersedure})
@@ -1431,8 +1485,8 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 16: Invalid enum remains rejected
 	t.Run("Case 16: Invalid enum remains rejected", func(t *testing.T) {
 		svc, _, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 4, 10, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 4, 10, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 5, 15, 0, 0, 0, 0, time.UTC)
 
 		_, _ = svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 
@@ -1450,7 +1504,7 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// Case 17: (hive_id, introduced_at) and strict neighbor bounds remain unchanged
 	t.Run("Case 17: duplicate introduced_at and neighbor bounds remain strictly enforced", func(t *testing.T) {
 		svc, _, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
 		_, _ = svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 
 		// Duplicate introduced_at rejected
@@ -1471,9 +1525,9 @@ func TestService_ReplacementReason_19RegressionCases(t *testing.T) {
 	// the predecessor's row, never the target's own.
 	t.Run("Case 19: API GET/PUT semantics expose each queen's own replacement reason", func(t *testing.T) {
 		svc, _, _, userID, hiveID := setupTest(t)
-		t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-		t2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		t3 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		t1 := time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+		t2 := time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)
+		t3 := time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC)
 
 		qA, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t1, IntroducedAt: t1})
 		qB, _ := svc.Create(ctx, userID, "token", hiveID, appqueen.CreateInput{MarkedAt: t2, IntroducedAt: t2, ReplacementReason: &reasonAging})

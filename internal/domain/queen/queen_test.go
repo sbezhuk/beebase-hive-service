@@ -157,3 +157,29 @@ func TestReplacementReason_IsValid(t *testing.T) {
 		}
 	}
 }
+
+func TestIsFutureCalendarDate(t *testing.T) {
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		t    time.Time
+		want bool
+	}{
+		{"today midnight UTC is not future", today, false},
+		{"today with a later time-of-day is not future", today.Add(23*time.Hour + 59*time.Minute), false},
+		{"yesterday is not future", today.AddDate(0, 0, -1), false},
+		{"far past is not future", time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), false},
+		{"tomorrow is future", today.AddDate(0, 0, 1), true},
+		{"far future is future", today.AddDate(5, 0, 0), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := queen.IsFutureCalendarDate(tc.t); got != tc.want {
+				t.Errorf("IsFutureCalendarDate(%v) = %v, want %v", tc.t, got, tc.want)
+			}
+		})
+	}
+}
