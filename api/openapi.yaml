@@ -438,14 +438,27 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         "200":
           description: Queen history returned.
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/QueenResponse" }
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/QueenResponse" }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
         "404":
           description: Hive not found.
           content:
@@ -514,9 +527,10 @@ paths:
       tags: [queens]
       summary: Update queen metadata
       description: >
-        Updates queen metadata fields (year, markedAt, introducedAt, notes).
+        Updates queen metadata fields (year, markedAt, introducedAt, replacementReason, notes).
         If introducedAt is modified, the queen must remain strictly between its predecessor and successor in the chain.
         If boundary is violated, returns 400 with timeline_invalid.
+        replacementReason modifies the incoming transition reason (stored on its predecessor); allowed on any non-oldest queen.
       parameters:
         - name: hiveId
           in: path
@@ -538,7 +552,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/QueenResponse" }
         "400":
-          description: Validation error (e.g. year invalid, timeline invalid where introducedAt violates chain bounds).
+          description: Validation error (e.g. year invalid, timeline invalid where introducedAt violates chain bounds, or replacement reason not allowed on oldest queen).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
@@ -551,7 +565,7 @@ paths:
       tags: [queens]
       summary: Delete the latest queen in the chain
       description: >
-        Permanently deletes the latest queen in the chain, rolling back its predecessor to current (removed_at = null).
+        Permanently deletes the latest queen in the chain, rolling back its predecessor to current (removed_at = null, replacement_reason = null).
         Only the latest queen can be deleted; deleting any non-latest queen returns 409 queen_not_latest.
       parameters:
         - name: hiveId
@@ -697,39 +711,121 @@ components:
 
     QueenResponse:
       type: object
-      required: [id, hiveId, year, markingColor, markingColorHex, introducedAt, notes, createdAt, updatedAt]
+      required: [id, hiveId, year, markingColor, markingColorHex, markedAt, introducedAt, notes, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
         hiveId: { type: string, format: uuid }
-        year: { type: integer, example: 2026 }
-        markingColor: { type: string, enum: [blue, white, yellow, red, green], example: white }
-        markingColorHex: { type: string, example: "#F8F9FA" }
-        markedAt: { type: string, format: date-time, nullable: true }
-        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
+        year:
+          type: integer
+          example: 2025
+          description: >
+            Marking year, always derived from markedAt - never accepted as input, and never
+            equal to the calendar year of introducedAt unless markedAt happens to fall in it.
+        markingColor: { type: string, enum: [blue, white, yellow, red, green], example: blue }
+        markingColorHex: { type: string, example: "#A7C7F7" }
+        markedAt:
+          type: string
+          format: date-time
+          example: "2025-06-10T00:00:00Z"
+          description: >
+            When this queen was marked/raised. Independent of introducedAt - a queen may be
+            marked well before she is introduced into this specific hive.
+        introducedAt: { type: string, format: date-time, example: "2026-04-15T00:00:00Z" }
         removedAt: { type: string, format: date-time, nullable: true }
+        replacementReason:
+          type: string
+          nullable: true
+          enum:
+            - AGING_AND_WEAR
+            - LOW_EGG_LAYING
+            - INJURY_OR_MUTILATION
+            - DISEASE_OR_POOR_QUALITY
+            - NATURAL_SUPERSEDURE
+            - BREED_CHANGE_OR_AGGRESSIVENESS
+          example: LOW_EGG_LAYING
+          description: >
+            Reason why THIS queen's own lifecycle ended, i.e. why she was replaced.
+            Null while this queen is current, or if she was never replaced.
         notes: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
     CreateQueenRequest:
       type: object
-      required: [year, introducedAt]
+      required: [markedAt, introducedAt]
+      description: >
+        There is no year field: the marking year is always derived from markedAt, never
+        accepted as input, so it can never drift from it.
       properties:
-        year: { type: integer, example: 2026 }
-        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
-        markedAt: { type: string, format: date-time, nullable: true }
+        markedAt:
+          type: string
+          format: date-time
+          example: "2025-06-10T00:00:00Z"
+          description: >
+            When this queen was marked/raised. Required, and independent of introducedAt -
+            a queen may be marked well before she is introduced into this specific hive.
+        introducedAt:
+          type: string
+          format: date-time
+          example: "2026-04-15T00:00:00Z"
+          description: >
+            Must not fall on a calendar day after today (introduced_at_in_future otherwise).
+            Today itself is always valid.
+        replacementReason:
+          type: string
+          nullable: true
+          enum:
+            - AGING_AND_WEAR
+            - LOW_EGG_LAYING
+            - INJURY_OR_MUTILATION
+            - DISEASE_OR_POOR_QUALITY
+            - NATURAL_SUPERSEDURE
+            - BREED_CHANGE_OR_AGGRESSIVENESS
+          example: LOW_EGG_LAYING
+          description: >
+            Reason why the previous queen's lifecycle ended (incoming transition to this queen).
+            Applies to the immediate chronological predecessor, not this queen.
+            Forbidden when creating the first queen or inserting before the oldest queen.
         notes: { type: string }
 
     UpdateQueenRequest:
       type: object
-      required: [year, introducedAt]
+      required: [markedAt, introducedAt]
       description: >
-        Update queen metadata and/or timeline position (year, markedAt, introducedAt, notes).
-        Must remain strictly between previous and next neighbor in chain.
+        Update queen metadata and/or timeline position (markedAt, introducedAt, replacementReason, notes).
+        Must remain strictly between previous and next neighbor in chain. There is no year
+        field: the marking year is always derived from markedAt, never accepted as input.
       properties:
-        year: { type: integer, example: 2026 }
-        introducedAt: { type: string, format: date-time, example: "2026-04-10T00:00:00Z" }
-        markedAt: { type: string, format: date-time, nullable: true }
+        markedAt:
+          type: string
+          format: date-time
+          example: "2025-06-10T00:00:00Z"
+          description: >
+            When this queen was marked/raised. Required, and independent of introducedAt -
+            a queen may be marked well before she is introduced into this specific hive.
+        introducedAt:
+          type: string
+          format: date-time
+          example: "2026-04-15T00:00:00Z"
+          description: >
+            Must not fall on a calendar day after today (introduced_at_in_future otherwise).
+            Today itself is always valid.
+        replacementReason:
+          type: string
+          nullable: true
+          enum:
+            - AGING_AND_WEAR
+            - LOW_EGG_LAYING
+            - INJURY_OR_MUTILATION
+            - DISEASE_OR_POOR_QUALITY
+            - NATURAL_SUPERSEDURE
+            - BREED_CHANGE_OR_AGGRESSIVENESS
+          example: LOW_EGG_LAYING
+          description: >
+            Reason for the incoming transition from the predecessor queen to this queen.
+            Stored physically on the immediate predecessor. Allowed on any non-oldest queen
+            (including the active/current queen). Forbidden on the oldest queen in the chain.
+            Omission preserves the existing reason; explicit null clears it.
         notes: { type: string }
 
     ErrorResponse:
@@ -800,8 +896,10 @@ components:
                   - invalid_limit
                   - invalid_search
                   - invalid_sort_order
-                  - year_required
-                  - year_invalid
+                  - marked_at_required
                   - introduced_at_required
+                  - introduced_at_in_future
                   - timeline_invalid
+                  - replacement_reason_invalid
+                  - replacement_reason_not_allowed
               example: { apiary_id: "apiary_id_invalid" }

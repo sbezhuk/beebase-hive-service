@@ -62,43 +62,93 @@ func ColorForYear(year int) ColorInfo {
 	}
 }
 
-// Queen represents a queen bee associated with a specific hive.
-type Queen struct {
-	ID           uuid.UUID
-	HiveID       uuid.UUID
-	Year         int
-	MarkedAt     *time.Time
-	IntroducedAt time.Time
-	RemovedAt    *time.Time
-	Notes        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-}
+// ReplacementReason represents the reason why a queen's lifecycle in a hive ended.
+type ReplacementReason string
 
-// New constructs a Queen with a freshly generated ID and timestamps set to now.
-func New(hiveID uuid.UUID, year int, markedAt *time.Time, introducedAt time.Time, removedAt *time.Time, notes string) *Queen {
-	now := time.Now().UTC()
-	return &Queen{
-		ID:           uuid.New(),
-		HiveID:       hiveID,
-		Year:         year,
-		MarkedAt:     markedAt,
-		IntroducedAt: introducedAt,
-		RemovedAt:    removedAt,
-		Notes:        notes,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+const (
+	ReasonAgingAndWear                ReplacementReason = "AGING_AND_WEAR"
+	ReasonLowEggLaying                ReplacementReason = "LOW_EGG_LAYING"
+	ReasonInjuryOrMutilation          ReplacementReason = "INJURY_OR_MUTILATION"
+	ReasonDiseaseOrPoorQuality        ReplacementReason = "DISEASE_OR_POOR_QUALITY"
+	ReasonNaturalSupersedure          ReplacementReason = "NATURAL_SUPERSEDURE"
+	ReasonBreedChangeOrAggressiveness ReplacementReason = "BREED_CHANGE_OR_AGGRESSIVENESS"
+)
+
+// IsValid reports whether r is one of the allowed queen replacement reasons.
+func (r ReplacementReason) IsValid() bool {
+	switch r {
+	case ReasonAgingAndWear,
+		ReasonLowEggLaying,
+		ReasonInjuryOrMutilation,
+		ReasonDiseaseOrPoorQuality,
+		ReasonNaturalSupersedure,
+		ReasonBreedChangeOrAggressiveness:
+		return true
+	default:
+		return false
 	}
 }
 
-// MarkingColor returns the calculated international marking color for the queen's year.
-func (q *Queen) MarkingColor() MarkingColor {
-	return ColorForYear(q.Year).Color
+// Queen represents a queen bee associated with a specific hive. MarkedAt and
+// IntroducedAt are deliberately independent: a queen may have been marked
+// (raised) before she was introduced into this specific hive. There is no
+// stored Year field - the marking year, and the color derived from it, are
+// always computed from MarkedAt, never persisted separately, so the two can
+// never drift out of sync.
+type Queen struct {
+	ID                uuid.UUID
+	HiveID            uuid.UUID
+	MarkedAt          time.Time
+	IntroducedAt      time.Time
+	RemovedAt         *time.Time
+	ReplacementReason *ReplacementReason
+	Notes             string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
-// MarkingColorHex returns the calculated hex color string for the queen's year.
+// New constructs a Queen with a freshly generated ID and timestamps set to now.
+func New(hiveID uuid.UUID, markedAt time.Time, introducedAt time.Time, removedAt *time.Time, replacementReason *ReplacementReason, notes string) *Queen {
+	now := time.Now().UTC()
+	return &Queen{
+		ID:                uuid.New(),
+		HiveID:            hiveID,
+		MarkedAt:          markedAt,
+		IntroducedAt:      introducedAt,
+		RemovedAt:         removedAt,
+		ReplacementReason: replacementReason,
+		Notes:             notes,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+}
+
+// Year returns the marking year, derived from MarkedAt.
+func (q *Queen) Year() int {
+	return q.MarkedAt.Year()
+}
+
+// IsFutureCalendarDate reports whether t falls on a calendar day after
+// today, both taken in UTC - so today itself is always valid regardless of
+// the time of day, and only a strictly later date is rejected. Shared by
+// both the HTTP validation layer (immediate 400) and the application
+// service (defense in depth) so introducedAt's "not in the future" rule
+// can never drift between the two.
+func IsFutureCalendarDate(t time.Time) bool {
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return day.After(today)
+}
+
+// MarkingColor returns the calculated international marking color for the queen's marking year.
+func (q *Queen) MarkingColor() MarkingColor {
+	return ColorForYear(q.Year()).Color
+}
+
+// MarkingColorHex returns the calculated hex color string for the queen's marking year.
 func (q *Queen) MarkingColorHex() string {
-	return ColorForYear(q.Year).Hex
+	return ColorForYear(q.Year()).Hex
 }
 
 // IsCurrent reports whether the queen is currently active in the hive.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/sbezhuk/beebase-common/pagination"
 
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	domainhive "github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
@@ -37,11 +38,17 @@ func NewService(
 // Create registers a new queen into the hive's strict chronological chain.
 // It derives lifecycle boundaries automatically and transactionally.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken string, hiveID uuid.UUID, in CreateInput) (*domainqueen.Queen, error) {
-	if in.Year < 1000 || in.Year > 9999 {
-		return nil, ErrInvalidYear
+	if in.MarkedAt.IsZero() {
+		return nil, ErrMarkedAtRequired
 	}
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
+	}
+	if domainqueen.IsFutureCalendarDate(in.IntroducedAt) {
+		return nil, ErrIntroducedAtInFuture
+	}
+	if in.ReplacementReason != nil && !in.ReplacementReason.IsValid() {
+		return nil, ErrReplacementReasonInvalid
 	}
 
 	h, err := s.hives.GetByID(ctx, userID, hiveID)
@@ -53,8 +60,8 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	newQueen := domainqueen.New(hiveID, in.Year, in.MarkedAt, in.IntroducedAt, nil, in.Notes)
-	if err := s.queens.InsertInChain(ctx, newQueen); err != nil {
+	newQueen := domainqueen.New(hiveID, in.MarkedAt, in.IntroducedAt, nil, nil, in.Notes)
+	if err := s.queens.InsertInChain(ctx, newQueen, in.ReplacementReason); err != nil {
 		return nil, err
 	}
 
@@ -85,14 +92,44 @@ func (s *Service) ListHistory(ctx context.Context, userID uuid.UUID, hiveID uuid
 	return s.queens.ListHistoryByHiveID(ctx, hiveID)
 }
 
+// ListHistoryPage returns one deterministic page for the public collection
+// endpoint while retaining the lifecycle service's unpaginated method.
+func (s *Service) ListHistoryPage(ctx context.Context, userID uuid.UUID, hiveID uuid.UUID, p pagination.Params) ([]*domainqueen.Queen, int, error) {
+	if _, err := s.hives.GetByID(ctx, userID, hiveID); err != nil {
+		return nil, 0, err
+	}
+	if repo, ok := s.queens.(domainqueen.PaginatedRepository); ok {
+		return repo.ListHistoryPageByHiveID(ctx, hiveID, p)
+	}
+	all, err := s.queens.ListHistoryByHiveID(ctx, hiveID)
+	if err != nil {
+		return nil, 0, err
+	}
+	start := p.Offset()
+	if start > len(all) {
+		start = len(all)
+	}
+	end := start + p.Limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[start:end], len(all), nil
+}
+
 // Update edits metadata and/or introducedAt for an existing queen.
 // The queen must remain strictly within its chain bounds (predecessor.introduced_at < introducedAt < successor.introduced_at).
 func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken string, hiveID, queenID uuid.UUID, in UpdateInput) (*domainqueen.Queen, error) {
-	if in.Year < 1000 || in.Year > 9999 {
-		return nil, ErrInvalidYear
+	if in.MarkedAt.IsZero() {
+		return nil, ErrMarkedAtRequired
 	}
 	if in.IntroducedAt.IsZero() {
 		return nil, ErrIntroducedAtRequired
+	}
+	if domainqueen.IsFutureCalendarDate(in.IntroducedAt) {
+		return nil, ErrIntroducedAtInFuture
+	}
+	if in.HasReplacementReason && in.ReplacementReason != nil && !in.ReplacementReason.IsValid() {
+		return nil, ErrReplacementReasonInvalid
 	}
 
 	h, err := s.hives.GetByID(ctx, userID, hiveID)
@@ -104,7 +141,7 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, accessToken stri
 		return nil, err
 	}
 
-	return s.queens.UpdateInChain(ctx, hiveID, queenID, in.Year, in.MarkedAt, in.IntroducedAt, in.Notes)
+	return s.queens.UpdateInChain(ctx, hiveID, queenID, in.MarkedAt, in.IntroducedAt, in.ReplacementReason, in.HasReplacementReason, in.Notes)
 }
 
 // Delete permanently removes the latest queen in the chain and rolls back the predecessor to current.

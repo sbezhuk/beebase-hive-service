@@ -11,6 +11,7 @@ import (
 
 	httpmw "github.com/sbezhuk/beebase-common/authmw"
 	"github.com/sbezhuk/beebase-common/httpx"
+	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	appqueen "github.com/sbezhuk/beebase-hive-service/internal/application/queen"
 	domainhive "github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
@@ -61,11 +62,17 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var replacementReason *domainqueen.ReplacementReason
+	if req.ReplacementReason != nil {
+		r := domainqueen.ReplacementReason(*req.ReplacementReason)
+		replacementReason = &r
+	}
+
 	created, err := h.service.Create(r.Context(), userID, token, hiveID, appqueen.CreateInput{
-		Year:         req.Year,
-		MarkedAt:     req.MarkedAt,
-		IntroducedAt: *req.IntroducedAt,
-		Notes:        req.Notes,
+		MarkedAt:          *req.MarkedAt,
+		IntroducedAt:      *req.IntroducedAt,
+		ReplacementReason: replacementReason,
+		Notes:             req.Notes,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -134,13 +141,18 @@ func (h *Handler) ListHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queens, err := h.service.ListHistory(r.Context(), userID, hiveID)
+	p, fields := pagination.ParseParams(r)
+	if len(fields) > 0 {
+		httpx.WriteValidationError(w, fields)
+		return
+	}
+	queens, total, err := h.service.ListHistoryPage(r.Context(), userID, hiveID, p)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, NewListResponse(queens))
+	httpx.WriteJSON(w, http.StatusOK, pagination.NewResponse(NewListResponse(queens), p, total))
 }
 
 // Update handles PUT /api/v1/hives/{hiveId}/queens/{queenId}.
@@ -165,11 +177,18 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var replacementReason *domainqueen.ReplacementReason
+	if req.ReplacementReason != nil {
+		r := domainqueen.ReplacementReason(*req.ReplacementReason)
+		replacementReason = &r
+	}
+
 	updated, err := h.service.Update(r.Context(), userID, token, hiveID, queenID, appqueen.UpdateInput{
-		Year:         req.Year,
-		MarkedAt:     req.MarkedAt,
-		IntroducedAt: *req.IntroducedAt,
-		Notes:        req.Notes,
+		MarkedAt:             *req.MarkedAt,
+		IntroducedAt:         *req.IntroducedAt,
+		ReplacementReason:    replacementReason,
+		HasReplacementReason: req.HasReplacementReason,
+		Notes:                req.Notes,
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -254,12 +273,18 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.WriteError(w, http.StatusConflict, CodeDuplicateIntroducedAt, "a queen with this introduction timestamp already exists in this hive")
 	case errors.Is(err, domainqueen.ErrActiveQueenExists):
 		httpx.WriteError(w, http.StatusConflict, CodeActiveQueenExists, "hive already has an active queen")
-	case errors.Is(err, appqueen.ErrInvalidYear):
-		httpx.WriteValidationError(w, map[string]string{"year": CodeYearInvalid})
+	case errors.Is(err, appqueen.ErrMarkedAtRequired):
+		httpx.WriteValidationError(w, map[string]string{"markedAt": CodeMarkedAtRequired})
 	case errors.Is(err, appqueen.ErrIntroducedAtRequired):
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeIntroducedAtRequired})
+	case errors.Is(err, appqueen.ErrIntroducedAtInFuture):
+		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeIntroducedAtInFuture})
 	case errors.Is(err, appqueen.ErrTimelineInvalid):
 		httpx.WriteValidationError(w, map[string]string{"introducedAt": CodeTimelineInvalid})
+	case errors.Is(err, appqueen.ErrReplacementReasonInvalid):
+		httpx.WriteValidationError(w, map[string]string{"replacementReason": CodeReplacementReasonInvalid})
+	case errors.Is(err, appqueen.ErrReplacementReasonNotAllowed):
+		httpx.WriteValidationError(w, map[string]string{"replacementReason": CodeReplacementReasonNotAllowed})
 	case errors.Is(err, apphive.ErrReadOnly):
 		httpx.WriteError(w, http.StatusForbidden, CodeResourceProLocked, "this hive requires Pro to edit")
 	case errors.Is(err, apphive.ErrParentReadOnly):

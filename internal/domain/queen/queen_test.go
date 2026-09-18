@@ -10,9 +10,9 @@ import (
 
 func TestColorForYear_ExactSpecification(t *testing.T) {
 	tests := []struct {
-		year     int
-		wantCol  queen.MarkingColor
-		wantHex  string
+		year    int
+		wantCol queen.MarkingColor
+		wantHex string
 	}{
 		{2024, queen.ColorGreen, queen.HexGreen},
 		{2025, queen.ColorBlue, queen.HexBlue},
@@ -70,11 +70,15 @@ func TestColorForYear_CycleAcrossDecades(t *testing.T) {
 
 func TestQueen_Methods(t *testing.T) {
 	hiveID := uuid.New()
-	now := time.Now().UTC()
-	q := queen.New(hiveID, 2026, &now, now, nil, "Strong layer")
+	markedAt2026 := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	introducedAt := time.Now().UTC()
+	q := queen.New(hiveID, markedAt2026, introducedAt, nil, nil, "Strong layer")
 
 	if !q.IsCurrent() {
 		t.Errorf("New queen should be current (RemovedAt is nil)")
+	}
+	if q.Year() != 2026 {
+		t.Errorf("Year() = %d, want 2026 (derived from MarkedAt)", q.Year())
 	}
 	if q.MarkingColor() != queen.ColorWhite {
 		t.Errorf("got %s, want %s", q.MarkingColor(), queen.ColorWhite)
@@ -83,8 +87,11 @@ func TestQueen_Methods(t *testing.T) {
 		t.Errorf("got %s, want %s", q.MarkingColorHex(), queen.HexWhite)
 	}
 
-	// Change year to 2027
-	q.Year = 2027
+	// Change marked year to 2027: color must follow MarkedAt, not IntroducedAt.
+	q.MarkedAt = time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	if q.Year() != 2027 {
+		t.Errorf("Year() = %d, want 2027", q.Year())
+	}
 	if q.MarkingColor() != queen.ColorYellow {
 		t.Errorf("got %s, want %s", q.MarkingColor(), queen.ColorYellow)
 	}
@@ -97,5 +104,82 @@ func TestQueen_Methods(t *testing.T) {
 	q.RemovedAt = &removed
 	if q.IsCurrent() {
 		t.Errorf("Queen with RemovedAt should not be current")
+	}
+}
+
+// TestQueen_MarkedAtIndependentOfIntroducedAt proves a queen may be marked
+// (raised) before she is introduced into this specific hive: the two dates
+// are unrelated, and Year()/marking color follow MarkedAt only.
+func TestQueen_MarkedAtIndependentOfIntroducedAt(t *testing.T) {
+	hiveID := uuid.New()
+	markedAt := time.Date(2025, 6, 10, 0, 0, 0, 0, time.UTC)
+	introducedAt := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+	q := queen.New(hiveID, markedAt, introducedAt, nil, nil, "")
+
+	if q.Year() != 2025 {
+		t.Errorf("Year() = %d, want 2025 (MarkedAt's year)", q.Year())
+	}
+	if q.MarkingColor() != queen.ColorBlue {
+		t.Errorf("MarkingColor() = %s, want %s (2025's color)", q.MarkingColor(), queen.ColorBlue)
+	}
+	if !q.IntroducedAt.Equal(introducedAt) {
+		t.Errorf("IntroducedAt = %v, want %v (independent of MarkedAt)", q.IntroducedAt, introducedAt)
+	}
+}
+
+func TestReplacementReason_IsValid(t *testing.T) {
+	validReasons := []queen.ReplacementReason{
+		queen.ReasonAgingAndWear,
+		queen.ReasonLowEggLaying,
+		queen.ReasonInjuryOrMutilation,
+		queen.ReasonDiseaseOrPoorQuality,
+		queen.ReasonNaturalSupersedure,
+		queen.ReasonBreedChangeOrAggressiveness,
+	}
+
+	for _, r := range validReasons {
+		if !r.IsValid() {
+			t.Errorf("expected %q to be valid", r)
+		}
+	}
+
+	invalidReasons := []queen.ReplacementReason{
+		"",
+		"aging_and_wear",
+		"UNKNOWN",
+		"SWARMING",
+		"OTHER",
+	}
+
+	for _, r := range invalidReasons {
+		if r.IsValid() {
+			t.Errorf("expected %q to be invalid", r)
+		}
+	}
+}
+
+func TestIsFutureCalendarDate(t *testing.T) {
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		t    time.Time
+		want bool
+	}{
+		{"today midnight UTC is not future", today, false},
+		{"today with a later time-of-day is not future", today.Add(23*time.Hour + 59*time.Minute), false},
+		{"yesterday is not future", today.AddDate(0, 0, -1), false},
+		{"far past is not future", time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), false},
+		{"tomorrow is future", today.AddDate(0, 0, 1), true},
+		{"far future is future", today.AddDate(5, 0, 0), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := queen.IsFutureCalendarDate(tc.t); got != tc.want {
+				t.Errorf("IsFutureCalendarDate(%v) = %v, want %v", tc.t, got, tc.want)
+			}
+		})
 	}
 }
