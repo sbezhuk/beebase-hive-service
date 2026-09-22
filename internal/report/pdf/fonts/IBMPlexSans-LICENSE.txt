@@ -1,0 +1,7 @@
+IBM Plex Sans is Copyright IBM Corp. 2017, 2019.
+
+The font is licensed under the SIL Open Font License, Version 1.1. The full
+license text is available at https://scripts.sil.org/OFL.
+
+The font files are bundled for PDF generation so English and Ukrainian report
+text render consistently in local development, Docker, and production.

@@ -9,9 +9,11 @@ package hive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -20,7 +22,9 @@ import (
 	"github.com/sbezhuk/beebase-common/httpx"
 	"github.com/sbezhuk/beebase-common/pagination"
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
+	appreport "github.com/sbezhuk/beebase-hive-service/internal/application/report"
 	"github.com/sbezhuk/beebase-hive-service/internal/domain/hive"
+	reportpdf "github.com/sbezhuk/beebase-hive-service/internal/report/pdf"
 )
 
 // Error codes for hive failures, returned as the top-level "error.code".
@@ -60,6 +64,12 @@ type Handler struct {
 	reminders     interface {
 		Cleanup(context.Context, string, uuid.UUID) error
 	}
+	reports interface {
+		Assemble(context.Context, uuid.UUID, string, uuid.UUID, appreport.Period, string) (*appreport.HiveReport, error)
+	}
+	renderer interface {
+		Render(context.Context, *appreport.HiveReport) ([]byte, error)
+	}
 }
 
 func (h *Handler) DeleteUserData(ctx context.Context, userID uuid.UUID) error {
@@ -69,14 +79,63 @@ func (h *Handler) DeleteUserData(ctx context.Context, userID uuid.UUID) error {
 // NewHandler returns a Handler backed by service. publicBaseURL is the
 // gateway's externally reachable base URL, used to build each image's
 // image_url.
-func NewHandler(service *apphive.Service, log *slog.Logger, publicBaseURL string, reminders ...interface {
-	Cleanup(context.Context, string, uuid.UUID) error
-}) *Handler {
+func NewHandler(service *apphive.Service, log *slog.Logger, publicBaseURL string, extras ...any) *Handler {
 	h := &Handler{service: service, log: log, publicBaseURL: publicBaseURL}
-	if len(reminders) > 0 {
-		h.reminders = reminders[0]
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case interface {
+			Cleanup(context.Context, string, uuid.UUID) error
+		}:
+			h.reminders = value
+		case interface {
+			Assemble(context.Context, uuid.UUID, string, uuid.UUID, appreport.Period, string) (*appreport.HiveReport, error)
+		}:
+			h.reports = value
+		case interface {
+			Render(context.Context, *appreport.HiveReport) ([]byte, error)
+		}:
+			h.renderer = value
+		}
 	}
 	return h
+}
+
+// Report handles GET /api/v1/hives/{hiveId}/report. It only translates HTTP
+// input and output; authorization, entitlement, and report assembly remain in
+// the application service.
+func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
+	userID, token, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	hiveID, ok := h.pathHiveID(w, r)
+	if !ok {
+		return
+	}
+	period, locale, fields := parseReportInput(r)
+	if len(fields) > 0 {
+		httpx.WriteValidationError(w, fields)
+		return
+	}
+	if h.reports == nil || h.renderer == nil {
+		h.writeReportFailure(w, errors.New("report dependencies are not configured"))
+		return
+	}
+	model, err := h.reports.Assemble(r.Context(), userID, token, hiveID, period, locale)
+	if err != nil {
+		h.writeReportServiceError(w, err)
+		return
+	}
+	content, err := h.renderer.Render(r.Context(), model)
+	if err != nil {
+		h.writeReportFailure(w, err)
+		return
+	}
+	filename := fmt.Sprintf("hive-report-%s_%s.pdf", period.From.Format("2006-01-02"), period.To.Format("2006-01-02"))
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }
 
 // Create handles POST /hives.
@@ -406,4 +465,77 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 	default:
 		httpx.WriteInternalError(w, h.log, err)
 	}
+}
+
+func parseReportInput(r *http.Request) (appreport.Period, string, map[string]string) {
+	query := r.URL.Query()
+	from, to, locale := query.Get("from"), query.Get("to"), query.Get("locale")
+	fields := map[string]string{}
+	if from == "" {
+		fields["from"] = "from_required"
+	}
+	if to == "" {
+		fields["to"] = "to_required"
+	}
+	if locale == "" {
+		fields["locale"] = "locale_required"
+	}
+	if from != "" && to != "" {
+		period, err := appreport.ParsePeriod(from, to)
+		if err != nil {
+			if from != "" {
+				if _, parseErr := time.Parse("2006-01-02", from); parseErr != nil {
+					fields["from"] = "from_invalid"
+				}
+			}
+			if to != "" {
+				if _, parseErr := time.Parse("2006-01-02", to); parseErr != nil {
+					fields["to"] = "to_invalid"
+				}
+			}
+			if len(fields) == 0 {
+				if strings.Contains(err.Error(), "after") {
+					fields["to"] = "from_after_to"
+				} else {
+					fields["to"] = "report_range_too_long"
+				}
+			}
+			return appreport.Period{}, locale, fields
+		} else if len(fields) == 0 {
+			if err := appreport.ValidateLocale(locale); err != nil {
+				fields["locale"] = "locale_invalid"
+			}
+			return period, locale, fields
+		}
+	}
+	if locale != "" {
+		if err := appreport.ValidateLocale(locale); err != nil {
+			fields["locale"] = "locale_invalid"
+		}
+	}
+	return appreport.Period{}, locale, fields
+}
+
+func (h *Handler) writeReportServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, appreport.ErrProRequired):
+		httpx.WriteError(w, http.StatusForbidden, CodeResourceProLocked, "Hive Report requires Pro")
+	case errors.Is(err, appreport.ErrReportGenerationUnavailable):
+		httpx.WriteError(w, http.StatusServiceUnavailable, "report_generation_unavailable", "report generation is temporarily unavailable")
+	case errors.Is(err, hive.ErrNotFound):
+		httpx.WriteError(w, http.StatusNotFound, CodeHiveNotFound, "hive not found")
+	default:
+		h.writeReportFailure(w, err)
+	}
+}
+
+func (h *Handler) writeReportFailure(w http.ResponseWriter, err error) {
+	if h.log != nil {
+		h.log.Error("hive report generation failed", "error", err)
+	}
+	code := "report_generation_failed"
+	if errors.Is(err, reportpdf.ErrRender) {
+		code = "report_generation_failed"
+	}
+	httpx.WriteError(w, http.StatusInternalServerError, code, "could not generate hive report")
 }
