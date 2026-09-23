@@ -22,12 +22,17 @@ var fontFiles embed.FS
 var ErrRender = errors.New("report render failed")
 
 const (
-	pageWidth    = 210.0
-	pageHeight   = 297.0
-	margin       = 15.0
-	contentLeft  = margin
-	contentRight = pageWidth - margin
-	contentW     = contentRight - contentLeft
+	pageWidth           = 210.0
+	pageHeight          = 297.0
+	margin              = 15.0
+	contentLeft         = margin
+	contentRight        = pageWidth - margin
+	contentW            = contentRight - contentLeft
+	tablePaddingX       = 2.5
+	tablePaddingY       = 1.5
+	tableHeaderPaddingY = 1.5
+	tableMinRowHeight   = 8.0
+	rowLineH            = 5.0
 )
 
 type Renderer struct {
@@ -220,13 +225,13 @@ func (d *document) health(model *report.HiveReport) error {
 	d.pdf.CellFormat(35, 6, d.tr.T("report.coverage"), "", 0, "L", false, 0, "")
 	d.setBody()
 	d.pdf.CellFormat(45, 6, d.tr.Enum(model.Health.Coverage), "", 1, "L", false, 0, "")
-	d.tableHeader([]string{d.tr.T("report.health_dimension"), d.tr.T("report.state"), d.tr.T("report.coverage"), d.tr.T("report.health_evidence")}, []float64{43, 35, 35, 67})
+	d.tableHeader([]string{d.tr.T("report.health_dimension"), d.tr.T("report.state"), d.tr.T("report.coverage"), d.tr.T("report.health_evidence")}, healthTableWidths())
 	for _, dimension := range model.Health.Dimensions {
 		evidence := make([]string, 0, len(dimension.Sources))
 		for _, source := range dimension.Sources {
 			evidence = append(evidence, formatDate(source.InspectedAt, d.tr.Locale))
 		}
-		d.row([]string{d.tr.Enum(dimension.Dimension), d.tr.Enum(dimension.State), d.tr.Enum(dimension.Coverage), strings.Join(evidence, ", ")}, []float64{43, 35, 35, 67}, 5)
+		d.row([]string{d.tr.Enum(dimension.Dimension), d.tr.Enum(dimension.State), d.tr.Enum(dimension.Coverage), strings.Join(evidence, ", ")}, healthTableWidths(), rowLineH)
 	}
 	d.pdf.Ln(4)
 	return nil
@@ -315,10 +320,10 @@ func (d *document) inspections(model *report.HiveReport) error {
 		d.empty(d.tr.T("report.no_inspections"))
 		return nil
 	}
-	d.tableHeader([]string{d.tr.T("report.inspection_date"), d.tr.T("report.type"), d.tr.T("report.assessment")}, []float64{32, 35, 103})
+	d.tableHeader([]string{d.tr.T("report.inspection_date"), d.tr.T("report.type"), d.tr.T("report.assessment")}, inspectionTableWidths())
 	for _, item := range model.Inspections {
 		assessment := d.assessment(item.Assessment)
-		d.row([]string{formatDate(item.InspectedAt, d.tr.Locale), d.tr.Enum(item.Type), assessment}, []float64{32, 35, 103}, 5)
+		d.row([]string{formatDate(item.InspectedAt, d.tr.Locale), d.tr.Enum(item.Type), assessment}, inspectionTableWidths(), rowLineH)
 	}
 	return nil
 }
@@ -380,7 +385,7 @@ func (d *document) queens(model *report.HiveReport) error {
 		d.empty(d.tr.T("report.no_queens"))
 		return nil
 	}
-	d.tableHeader([]string{d.tr.T("report.introduced"), d.tr.T("report.removed"), d.tr.T("report.year_color"), d.tr.T("report.current_queen"), d.tr.T("report.replacement_reason")}, []float64{28, 28, 35, 35, 44})
+	d.tableHeader([]string{d.tr.T("report.introduced"), d.tr.T("report.removed"), d.tr.T("report.year_color"), d.tr.T("report.current_queen"), d.tr.T("report.replacement_reason")}, queenTableWidths())
 	for _, queen := range model.Queens {
 		removed := d.tr.T("report.no_replacement")
 		if queen.RemovedAt != nil {
@@ -395,7 +400,7 @@ func (d *document) queens(model *report.HiveReport) error {
 			reason = d.tr.Enum(*queen.ReplacementReason)
 		}
 		color := d.tr.Enum(strings.ToUpper(queen.MarkingColor))
-		d.row([]string{formatTimeDate(queen.IntroducedAt, d.tr.Locale), removed, fmt.Sprintf("%d / %s", queen.Year, color), current, reason}, []float64{28, 28, 35, 35, 44}, 5)
+		d.row([]string{formatTimeDate(queen.IntroducedAt, d.tr.Locale), removed, fmt.Sprintf("%d / %s", queen.Year, color), current, reason}, queenTableWidths(), rowLineH)
 	}
 	return nil
 }
@@ -408,16 +413,16 @@ func (d *document) harvests(model *report.HiveReport) error {
 		d.empty(d.tr.T("report.no_harvests"))
 		return nil
 	}
-	d.tableHeader([]string{d.tr.T("report.date"), d.tr.T("report.product"), d.tr.T("report.amount"), d.tr.T("report.unit")}, []float64{40, 65, 35, 30})
+	d.tableHeader([]string{d.tr.T("report.date"), d.tr.T("report.product"), d.tr.T("report.amount"), d.tr.T("report.unit")}, harvestTableWidths())
 	for _, item := range model.Harvests {
-		d.row([]string{formatDate(item.HarvestedAt, d.tr.Locale), d.tr.Enum(item.Product), fmt.Sprintf("%.2f", item.Amount), d.tr.Enum(item.Unit)}, []float64{40, 65, 35, 30}, 5)
+		d.row([]string{formatDate(item.HarvestedAt, d.tr.Locale), d.tr.Enum(item.Product), fmt.Sprintf("%.2f", item.Amount), d.tr.Enum(item.Unit)}, harvestTableWidths(), rowLineH)
 	}
 	d.pdf.Ln(2)
 	d.pdf.SetFont("plex", "B", 10)
 	d.pdf.CellFormat(contentW, 6, d.tr.T("report.total"), "", 1, "L", false, 0, "")
 	d.setBody()
 	for _, total := range model.HarvestTotals {
-		d.row([]string{d.tr.Enum(total.Product), fmt.Sprintf("%.2f", total.Amount), d.tr.Enum(total.Unit)}, []float64{80, 45, 45}, 5)
+		d.row([]string{d.tr.Enum(total.Product), fmt.Sprintf("%.2f", total.Amount), d.tr.Enum(total.Unit)}, harvestTotalWidths(), rowLineH)
 	}
 	return nil
 }
@@ -434,13 +439,7 @@ func (d *document) summary(model *report.HiveReport) error {
 
 func (d *document) summaryRow(label, value string) {
 	const labelW = 100.0
-	const rowH = 6.0
-	if d.pdf.GetY()+rowH > pageHeight-18 {
-		d.pdf.AddPage()
-	}
-	d.setBody()
-	d.pdf.CellFormat(labelW, rowH, label, "", 0, "L", false, 0, "")
-	d.pdf.CellFormat(contentW-labelW, rowH, value, "", 1, "L", false, 0, "")
+	d.wrappedRow([]string{label, value}, []float64{labelW, contentW - labelW}, rowLineH, tablePaddingY, tableMinRowHeight, false, false)
 	d.fullWidthDivider(d.pdf.GetY())
 }
 
@@ -448,21 +447,57 @@ func (d *document) tableHeader(values []string, widths []float64) {
 	setFillColor(d.pdf, d.palette.Card)
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 8)
-	for i, value := range values {
-		d.pdf.CellFormat(widths[i], 7, value, "", 0, "L", true, 0, "")
-	}
-	d.pdf.Ln(-1)
+	d.wrappedRow(values, widths, 7, tableHeaderPaddingY, tableMinRowHeight, true, false)
 	d.setBody()
 }
 
 func (d *document) row(values []string, widths []float64, height float64) {
-	if d.pdf.GetY()+height > pageHeight-18 {
+	d.wrappedRow(values, widths, height, tablePaddingY, tableMinRowHeight, false, true)
+}
+
+func (d *document) wrappedRow(values []string, widths []float64, lineHeight, verticalPadding, minHeight float64, fill, separator bool) {
+	lines := make([][]string, len(values))
+	rowHeight := minHeight
+	for i, value := range values {
+		lines[i] = d.wrapCell(value, widths[i])
+		if height := float64(len(lines[i]))*lineHeight + 2*verticalPadding; height > rowHeight {
+			rowHeight = height
+		}
+	}
+	if d.pdf.GetY()+rowHeight > pageHeight-18 {
 		d.pdf.AddPage()
 	}
-	for i, value := range values {
-		d.pdf.CellFormat(widths[i], height, value, "B", 0, "L", false, 0, "")
+	y := d.pdf.GetY()
+	x := contentLeft
+	for i, cellLines := range lines {
+		width := widths[i]
+		if fill {
+			d.pdf.Rect(x, y, width, rowHeight, "F")
+		}
+		contentHeight := float64(len(cellLines)) * lineHeight
+		textY := y + verticalPadding + (rowHeight-2*verticalPadding-contentHeight)/2
+		d.pdf.SetXY(x+tablePaddingX, textY)
+		innerWidth := maxFloat(1, width-2*tablePaddingX)
+		d.pdf.MultiCell(innerWidth, lineHeight, strings.Join(cellLines, "\n"), "", "L", false)
+		x += width
 	}
-	d.pdf.Ln(-1)
+	if separator {
+		d.pdf.Line(contentLeft, y+rowHeight, contentRight, y+rowHeight)
+	}
+	d.pdf.SetXY(contentLeft, y+rowHeight)
+}
+
+func (d *document) wrapCell(value string, width float64) []string {
+	innerWidth := maxFloat(1, width-2*tablePaddingX)
+	lines := d.pdf.SplitLines([]byte(value), innerWidth)
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		result[i] = string(line)
+	}
+	return result
 }
 
 func (d *document) empty(value string) {
@@ -475,6 +510,23 @@ func (d *document) empty(value string) {
 func setTextColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetTextColor(color.R, color.G, color.B) }
 func setDrawColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetDrawColor(color.R, color.G, color.B) }
 func setFillColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetFillColor(color.R, color.G, color.B) }
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func inspectionTableWidths() []float64 { return []float64{32, 35, contentW - 32 - 35} }
+
+func healthTableWidths() []float64 { return []float64{43, 35, 35, contentW - 43 - 35 - 35} }
+
+func queenTableWidths() []float64 { return []float64{28, 28, 35, 35, contentW - 28 - 28 - 35 - 35} }
+
+func harvestTableWidths() []float64 { return []float64{40, contentW - 40 - 35 - 30, 35, 30} }
+
+func harvestTotalWidths() []float64 { return []float64{contentW - 45 - 45, 45, 45} }
 
 func (c Catalog) Label(field string) string {
 	if value, ok := c.Text["assessment."+field]; ok {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-pdf/fpdf"
 	"github.com/google/uuid"
 
 	"github.com/sbezhuk/beebase-hive-service/internal/application/report"
@@ -72,6 +73,91 @@ func TestFullWidthDividerBoundsAreCanonical(t *testing.T) {
 		if got := contentW; got != width {
 			t.Fatalf("summary divider width changed for value %q: %v", value, got)
 		}
+	}
+}
+
+func TestReportTablesUseSafeContentWidth(t *testing.T) {
+	for name, widths := range map[string][]float64{
+		"health":         healthTableWidths(),
+		"inspection":     inspectionTableWidths(),
+		"queen":          queenTableWidths(),
+		"harvest":        harvestTableWidths(),
+		"harvest totals": harvestTotalWidths(),
+	} {
+		var total float64
+		for _, width := range widths {
+			if width <= 0 {
+				t.Fatalf("%s has non-positive column width %v", name, width)
+			}
+			total += width
+		}
+		if total != contentW {
+			t.Fatalf("%s width = %v, want content width %v", name, total, contentW)
+		}
+	}
+}
+
+func TestTablePaddingStaysInsideCellBounds(t *testing.T) {
+	if tablePaddingX < 2 || tablePaddingX > 3 || tablePaddingY < 1.5 || tablePaddingY > 2 {
+		t.Fatalf("unexpected table padding: horizontal=%v vertical=%v", tablePaddingX, tablePaddingY)
+	}
+	for _, width := range inspectionTableWidths() {
+		if width-2*tablePaddingX <= 0 {
+			t.Fatalf("column width %v cannot contain canonical horizontal padding", width)
+		}
+	}
+	if tableMinRowHeight < rowLineH+2*tablePaddingY {
+		t.Fatalf("minimum row height %v does not include vertical padding", tableMinRowHeight)
+	}
+}
+
+func TestWrapCellUsesFontMetricsForEnglishAndUkrainian(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddPage()
+	pdf.SetFont("plex", "", 9)
+	doc := &document{pdf: pdf}
+	for locale, value := range map[string]string{
+		"en": "Colony strength: Moderate; Queen status: Problem; Brood status: Not checked; Food stores: Low; Health concerns: Varroa signs; Feeding performed: No",
+		"uk": "Сила сім'ї: Середня; Стан матки: Проблема; Стан розплоду: Не перевірено; Запаси корму: Низькі; Проблеми зі здоров'ям: ознаки вароа; Годівля: Ні",
+	} {
+		lines := doc.wrapCell(value, 70)
+		if len(lines) < 2 {
+			t.Fatalf("%s content did not wrap", locale)
+		}
+		for _, line := range lines {
+			if got := pdf.GetStringWidth(line); got > 65.001 {
+				t.Fatalf("%s line width = %v, exceeds inner width", locale, got)
+			}
+		}
+	}
+}
+
+func TestRendererHandlesPaddedLongTableRows(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := sampleReport("uk", 20)
+	long := "Сила сім'ї: Середня; Стан матки: Проблема; Стан розплоду: Не перевірено; Запаси корму: Низькі; Проблеми зі здоров'ям: ознаки вароа; Годівля: не виконувалась; Додаткове спостереження для перевірки переносу тексту"
+	model.Inspections[0].Assessment = &report.AssessmentData{HealthConcerns: stringPtr(long)}
+	model.Health.Dimensions[0].Sources = []report.HealthEvidenceSourceData{
+		{InspectedAt: "2026-06-01"},
+		{InspectedAt: "2026-07-01"},
+		{InspectedAt: "2026-08-01"},
+		{InspectedAt: "2026-09-01"},
+	}
+	content, err := renderer.Render(context.Background(), model)
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	assertPDF(t, content)
+	if strings.Count(string(content), "/Type /Page") < 2 {
+		t.Fatal("padded long rows did not paginate")
 	}
 }
 
