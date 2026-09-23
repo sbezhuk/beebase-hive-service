@@ -14,7 +14,7 @@ type Catalog struct {
 }
 
 var requiredKeys = []string{
-	"report.title", "report.period", "report.generated_at", "report.hive_id", "report.apiary_id",
+	"report.title", "report.period", "report.generated_at",
 	"report.colony_health", "report.health_history", "report.inspections", "report.queen_history", "report.harvests", "report.summary",
 	"report.current_queen", "report.no_inspections", "report.no_health_history", "report.no_queens", "report.no_harvests",
 	"report.qr_instruction", "report.date", "report.type", "report.assessment", "report.state", "report.coverage",
@@ -41,7 +41,7 @@ var baseEnums = map[string]string{
 }
 
 var enText = map[string]string{
-	"report.title": "Hive Report", "report.period": "Report period", "report.generated_at": "Generated", "report.hive_id": "Hive ID", "report.apiary_id": "Apiary ID",
+	"report.title": "Hive Report", "report.period": "Report period", "report.generated_at": "Generated",
 	"report.colony_health": "Colony Health", "report.health_history": "Health History", "report.inspections": "Inspections", "report.queen_history": "Queen History", "report.harvests": "Harvests", "report.summary": "Summary",
 	"report.current_queen": "Current queen", "report.no_inspections": "No inspections were recorded in this period.", "report.no_health_history": "No health history points are available for this period.", "report.no_queens": "No queen history overlaps this period.", "report.no_harvests": "No harvests were recorded in this period.",
 	"report.qr_instruction": "Scan to open this Hive in BeeBase.", "report.date": "Date", "report.type": "Type", "report.assessment": "Assessment", "report.state": "State", "report.coverage": "Coverage",
@@ -50,7 +50,7 @@ var enText = map[string]string{
 }
 
 var ukText = map[string]string{
-	"report.title": "Звіт про вулик", "report.period": "Період звіту", "report.generated_at": "Створено", "report.hive_id": "ID вулика", "report.apiary_id": "ID пасіки",
+	"report.title": "Звіт про вулик", "report.period": "Період звіту", "report.generated_at": "Створено",
 	"report.colony_health": "Стан бджолиної сім'ї", "report.health_history": "Історія стану", "report.inspections": "Огляди", "report.queen_history": "Історія маток", "report.harvests": "Збори", "report.summary": "Підсумок",
 	"report.current_queen": "Поточна матка", "report.no_inspections": "За цей період оглядів не зафіксовано.", "report.no_health_history": "За цей період немає точок історії стану.", "report.no_queens": "Історія маток не перетинає цей період.", "report.no_harvests": "За цей період зборів не зафіксовано.",
 	"report.qr_instruction": "Відскануйте, щоб відкрити цей вулик у BeeBase.", "report.date": "Дата", "report.type": "Тип", "report.assessment": "Оцінка", "report.state": "Стан", "report.coverage": "Покриття",

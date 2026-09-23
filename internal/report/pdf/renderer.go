@@ -22,10 +22,12 @@ var fontFiles embed.FS
 var ErrRender = errors.New("report render failed")
 
 const (
-	pageWidth  = 210.0
-	pageHeight = 297.0
-	margin     = 15.0
-	contentW   = pageWidth - 2*margin
+	pageWidth    = 210.0
+	pageHeight   = 297.0
+	margin       = 15.0
+	contentLeft  = margin
+	contentRight = pageWidth - margin
+	contentW     = contentRight - contentLeft
 )
 
 type Renderer struct {
@@ -141,17 +143,13 @@ func (d *document) header(model *report.HiveReport) error {
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.MultiCell(125, 7, model.Hive.Name, "", "L", false)
 	setDrawColor(d.pdf, d.palette.Border)
-	d.pdf.Line(margin, d.pdf.GetY()+2, pageWidth-margin, d.pdf.GetY()+2)
+	d.fullWidthDivider(d.pdf.GetY() + 2)
 	d.pdf.SetY(d.pdf.GetY() + 8)
 	d.setBody()
 	d.pdf.CellFormat(37, 6, d.tr.T("report.period"), "", 0, "L", false, 0, "")
 	d.pdf.CellFormat(70, 6, formatDate(model.Metadata.From.String(), d.tr.Locale)+" - "+formatDate(model.Metadata.To.String(), d.tr.Locale), "", 1, "L", false, 0, "")
 	d.pdf.CellFormat(37, 6, d.tr.T("report.generated_at"), "", 0, "L", false, 0, "")
 	d.pdf.CellFormat(70, 6, formatTime(model.Metadata.GeneratedAt, d.tr.Locale), "", 1, "L", false, 0, "")
-	d.pdf.CellFormat(37, 6, d.tr.T("report.hive_id"), "", 0, "L", false, 0, "")
-	d.pdf.CellFormat(100, 6, model.Hive.ID.String(), "", 1, "L", false, 0, "")
-	d.pdf.CellFormat(37, 6, d.tr.T("report.apiary_id"), "", 0, "L", false, 0, "")
-	d.pdf.CellFormat(100, 6, model.Hive.ApiaryID.String(), "", 1, "L", false, 0, "")
 	if model.Hive.Notes != "" {
 		d.pdf.CellFormat(37, 6, "", "", 0, "L", false, 0, "")
 		d.pdf.MultiCell(100, 6, model.Hive.Notes, "", "L", false)
@@ -193,12 +191,20 @@ func (d *document) section(title string) error {
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 15)
 	d.pdf.CellFormat(contentW, 8, title, "", 1, "L", false, 0, "")
-	setDrawColor(d.pdf, d.palette.Brand)
-	d.pdf.SetLineWidth(0.7)
-	d.pdf.Line(margin, d.pdf.GetY(), pageWidth-margin, d.pdf.GetY())
+	d.fullWidthDivider(d.pdf.GetY())
 	d.pdf.Ln(4)
 	d.setBody()
 	return nil
+}
+
+func (d *document) fullWidthDivider(y float64) {
+	setDrawColor(d.pdf, d.palette.Brand)
+	d.pdf.SetLineWidth(0.7)
+	d.pdf.Line(contentLeft, y, contentRight, y)
+}
+
+func fullWidthDividerBounds() (left, right, width float64) {
+	return contentLeft, contentRight, contentW
 }
 
 func (d *document) health(model *report.HiveReport) error {
@@ -270,10 +276,30 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	d.pdf.SetFont("plex", "", 7)
 	for _, index := range []int{0, len(points) - 1} {
 		px := x + w*float64(index)/float64(maxInt(1, len(points)-1))
+		label := formatDate(points[index].Date, d.tr.Locale)
+		labelX := chartLabelX(px, x, w, d.pdf.GetStringWidth(label))
 		setTextColor(d.pdf, d.palette.TextSecondary)
-		d.pdf.Text(px, y+h+5, formatDate(points[index].Date, d.tr.Locale))
+		d.pdf.Text(labelX, y+h+5, label)
 	}
 	d.pdf.SetY(y + h + 9)
+}
+
+// chartLabelX centers a date label on its timeline point while keeping its
+// complete bounding box inside the chart's safe content bounds.
+func chartLabelX(pointX, chartX, chartW, labelW float64) float64 {
+	if labelW >= chartW {
+		return chartX
+	}
+	left := pointX - labelW/2
+	minX := chartX
+	maxX := chartX + chartW - labelW
+	if left < minX {
+		return minX
+	}
+	if left > maxX {
+		return maxX
+	}
+	return left
 }
 
 func chartY(y, h float64, state string) float64 {
@@ -400,10 +426,22 @@ func (d *document) summary(model *report.HiveReport) error {
 	if err := d.section(d.tr.T("report.summary")); err != nil {
 		return err
 	}
-	d.row([]string{d.tr.T("report.inspections"), strconv.Itoa(len(model.Inspections))}, []float64{100, 70}, 6)
-	d.row([]string{d.tr.T("report.queen_history"), strconv.Itoa(len(model.Queens))}, []float64{100, 70}, 6)
-	d.row([]string{d.tr.T("report.harvests"), strconv.Itoa(len(model.Harvests))}, []float64{100, 70}, 6)
+	d.summaryRow(d.tr.T("report.inspections"), strconv.Itoa(len(model.Inspections)))
+	d.summaryRow(d.tr.T("report.queen_history"), strconv.Itoa(len(model.Queens)))
+	d.summaryRow(d.tr.T("report.harvests"), strconv.Itoa(len(model.Harvests)))
 	return nil
+}
+
+func (d *document) summaryRow(label, value string) {
+	const labelW = 100.0
+	const rowH = 6.0
+	if d.pdf.GetY()+rowH > pageHeight-18 {
+		d.pdf.AddPage()
+	}
+	d.setBody()
+	d.pdf.CellFormat(labelW, rowH, label, "", 0, "L", false, 0, "")
+	d.pdf.CellFormat(contentW-labelW, rowH, value, "", 1, "L", false, 0, "")
+	d.fullWidthDivider(d.pdf.GetY())
 }
 
 func (d *document) tableHeader(values []string, widths []float64) {

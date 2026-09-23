@@ -29,6 +29,52 @@ func TestReportPaletteMirrorsMobileLightSemanticTokens(t *testing.T) {
 	}
 }
 
+func TestChartLabelXKeepsDateLabelsInsideSafeBounds(t *testing.T) {
+	const (
+		chartX = 15.0
+		chartW = 180.0
+		labelW = 28.0
+	)
+
+	tests := []struct {
+		name   string
+		pointX float64
+		labelW float64
+		wantX  float64
+	}{
+		{name: "left edge", pointX: chartX, labelW: labelW, wantX: chartX},
+		{name: "center", pointX: chartX + chartW/2, labelW: labelW, wantX: chartX + (chartW-labelW)/2},
+		{name: "right edge", pointX: chartX + chartW, labelW: labelW, wantX: chartX + chartW - labelW},
+		{name: "wide label", pointX: chartX + chartW, labelW: 80, wantX: chartX + chartW - 80},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := chartLabelX(tt.pointX, chartX, chartW, tt.labelW)
+			if got != tt.wantX {
+				t.Fatalf("chartLabelX() = %v, want %v", got, tt.wantX)
+			}
+			if got < chartX || got+tt.labelW > chartX+chartW {
+				t.Fatalf("label bounds [%v, %v] escaped chart bounds [%v, %v]", got, got+tt.labelW, chartX, chartX+chartW)
+			}
+		})
+	}
+}
+
+func TestFullWidthDividerBoundsAreCanonical(t *testing.T) {
+	left, right, width := fullWidthDividerBounds()
+	if left != margin || right != pageWidth-margin || width != contentW {
+		t.Fatalf("divider bounds = (%v, %v, %v), want (%v, %v, %v)", left, right, width, margin, pageWidth-margin, contentW)
+	}
+	if left < 0 || right > pageWidth || width <= 0 {
+		t.Fatalf("divider escaped safe page bounds: (%v, %v, %v)", left, right, width)
+	}
+	for _, value := range []string{"0", "12", "999999"} {
+		if got := contentW; got != width {
+			t.Fatalf("summary divider width changed for value %q: %v", value, got)
+		}
+	}
+}
+
 func TestRendererProducesValidEnglishPDFWithAllSections(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
