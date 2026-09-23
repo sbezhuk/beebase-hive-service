@@ -545,6 +545,89 @@ func TestTableColumnBoundariesUseCanonicalWidths(t *testing.T) {
 	}
 }
 
+func TestColonyHealthEvidenceLabelUsesUserFacingLastDataCopy(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddUTF8FontFromBytes("plex", "B", renderer.bold)
+	pdf.AddPage()
+	for _, test := range []struct {
+		locale string
+		want   string
+	}{
+		{locale: "en", want: "Last data"},
+		{locale: "uk", want: "Останні дані"},
+	} {
+		t.Run(test.locale, func(t *testing.T) {
+			catalog, err := NewCatalog(test.locale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := catalog.T("report.health_evidence"); got != test.want {
+				t.Fatalf("health evidence label = %q, want %q", got, test.want)
+			}
+			if got := catalog.T("report.health_evidence"); got == "Evidence" || got == "Докази" {
+				t.Fatalf("old technical label still rendered: %q", got)
+			}
+			doc := &document{pdf: pdf, tr: catalog, palette: beeBasePalette}
+			values := doc.healthRowValues(sampleReport(test.locale, 0).Health.Dimensions[0])
+			if values[3] != "01 Jun 2026" && values[3] != "01 черв 2026" {
+				t.Fatalf("health evidence value changed with label: %q", values[3])
+			}
+		})
+	}
+}
+
+func TestQueenIntroducedHeaderFitsWithMeasuredSharedWidth(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddUTF8FontFromBytes("plex", "B", renderer.bold)
+	pdf.AddPage()
+	pdf.SetFont("plex", "B", 8)
+	doc := &document{pdf: pdf, palette: beeBasePalette}
+	widths := doc.queenTableWidths()
+	if len(widths) != 5 {
+		t.Fatalf("queen column count = %d, want 5", len(widths))
+	}
+	if widths[0] <= 28 {
+		t.Fatalf("introduced column width = %f, want slight redistribution above the previous 28", widths[0])
+	}
+	if got := sumFloats(widths); math.Abs(got-contentW) > fitEpsilon {
+		t.Fatalf("queen table width = %f, want content width %f", got, contentW)
+	}
+	if contentLeft+sumFloats(widths) > contentRight+fitEpsilon || contentLeft < margin-fitEpsilon {
+		t.Fatalf("queen table escaped canonical content bounds")
+	}
+	for _, locale := range []string{"en", "uk"} {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		required := pdf.GetStringWidth(catalog.T("report.introduced")) + 2*tablePaddingX
+		if widths[0]+fitEpsilon < required {
+			t.Fatalf("%s introduced width = %f, want >= measured text plus padding %f", locale, widths[0], required)
+		}
+		if lines := doc.wrapCell(catalog.T("report.introduced"), widths[0]); len(lines) != 1 {
+			t.Fatalf("%s introduced header wrapped into %d lines: %v (width=%f required=%f inner=%f)", locale, len(lines), lines, widths[0], required, widths[0]-2*tablePaddingX)
+		}
+	}
+}
+
+func sumFloats(values []float64) float64 {
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
 func TestSectionSpacingIsCentralizedAndPaginationAware(t *testing.T) {
 	if sectionGapBefore <= sectionContentGap {
 		t.Fatalf("section gap %v must exceed title-to-content gap %v", sectionGapBefore, sectionContentGap)

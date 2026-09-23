@@ -918,7 +918,7 @@ func (d *document) assessment(value *report.AssessmentData) string {
 }
 
 func (d *document) queens(model *report.HiveReport) error {
-	widths := queenTableWidths()
+	widths := d.queenTableWidths()
 	headers := []string{d.tr.T("report.introduced"), d.tr.T("report.removed"), d.tr.T("report.year_color"), d.tr.T("report.current_queen"), d.tr.T("report.replacement_reason")}
 	minimumContentHeight := d.measureEmptyState(d.tr.T("report.no_queens"))
 	if len(model.Queens) > 0 {
@@ -1192,13 +1192,13 @@ func tableColumnBoundaries(widths []float64) []float64 {
 func (d *document) wrapCell(value string, width float64) []string {
 	value = displayCellValue(value)
 	innerWidth := maxFloat(1, width-2*tablePaddingX)
-	lines := d.pdf.SplitLines([]byte(value), innerWidth)
+	lines := d.pdf.SplitText(value, innerWidth)
 	if len(lines) == 0 {
 		return []string{""}
 	}
 	result := make([]string, len(lines))
 	for i, line := range lines {
-		result[i] = string(line)
+		result[i] = line
 	}
 	return result
 }
@@ -1273,7 +1273,25 @@ func inspectionTableWidths() []float64 { return []float64{32, 35, contentW - 32 
 
 func healthTableWidths() []float64 { return []float64{43, 35, 35, contentW - 43 - 35 - 35} }
 
-func queenTableWidths() []float64 { return []float64{28, 28, 35, 35, contentW - 28 - 28 - 35 - 35} }
+const queenIntroducedColumnFloor = 30.0
+
+func queenTableWidths() []float64 {
+	return []float64{queenIntroducedColumnFloor, 28, 35, 35, contentW - queenIntroducedColumnFloor - 28 - 35 - 35}
+}
+
+func (d *document) queenTableWidths() []float64 {
+	d.pdf.SetFont("plex", "B", 8)
+	introducedWidth := queenIntroducedColumnFloor
+	for _, locale := range []string{"en", "uk"} {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			continue
+		}
+		required := d.pdf.GetStringWidth(catalog.T("report.introduced")) + 2*tablePaddingX
+		introducedWidth = maxFloat(introducedWidth, required)
+	}
+	return []float64{introducedWidth, 28, 35, 35, contentW - introducedWidth - 28 - 35 - 35}
+}
 
 func harvestTableWidths() []float64 { return []float64{40, contentW - 40 - 35 - 30, 35, 30} }
 
