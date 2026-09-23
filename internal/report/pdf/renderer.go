@@ -43,7 +43,8 @@ const (
 	healthChartPlotHeight   = 52.0
 	healthChartPlotInset    = 4.0
 	healthChartDataInset    = 1.5
-	healthChartLabelInset   = 2.0
+	healthChartLabelPadding = 1.5
+	healthChartAxisGap      = 3.0
 	healthChartDateGap      = 5.0
 	healthChartLegendGap    = 7.0
 	healthChartLegendHeight = 6.0
@@ -394,8 +395,8 @@ func (d *document) history(model *report.HiveReport) error {
 
 func (d *document) chart(points []report.HealthHistoryPointData) {
 	y := d.pdf.GetY()
-	chartX, chartW := healthChartBounds()
-	dataX, dataW := healthChartDataBounds()
+	chartX, _ := healthChartBounds()
+	dataX, dataW := healthChartPlotBounds(d)
 	h := healthChartPlotHeight
 	maxIndex := len(points) - 1
 	xForIndex := func(index int) float64 {
@@ -415,7 +416,7 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	d.pdf.SetLineWidth(0.25)
 	for _, state := range knownHealthStates() {
 		yy := chartY(y, h, state)
-		d.pdf.Line(chartX, yy, chartX+chartW, yy)
+		d.pdf.Line(dataX, yy, dataX+dataW, yy)
 	}
 
 	// Known segments are rendered independently. A segment ends at UNKNOWN,
@@ -433,7 +434,7 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 			chartY(y, h, "CONCERN")-chartY(y, h, "GOOD"),
 		)
 	}
-	d.renderHealthChartStateLabels(chartX, chartW, y, h)
+	d.renderHealthChartStateLabels(chartX, dataX, y, h)
 	d.pdf.SetFont("plex", "", 7)
 	spansMultipleYears := chartSpansMultipleYears(points)
 	for _, index := range healthChartDateIndices(len(points)) {
@@ -451,26 +452,35 @@ func healthChartBounds() (x, width float64) {
 	return contentLeft, contentW
 }
 
-func healthChartDataBounds() (x, width float64) {
-	return contentLeft + healthChartDataInset, contentW - 2*healthChartDataInset
+func healthChartPlotBounds(d *document) (x, width float64) {
+	chartX, chartW := healthChartBounds()
+	labelZoneWidth := healthChartLabelZoneWidth(d)
+	plotLeft := chartX + labelZoneWidth + healthChartAxisGap + healthChartDataInset
+	plotRight := chartX + chartW - healthChartDataInset
+	return plotLeft, maxFloat(1, plotRight-plotLeft)
 }
 
-func (d *document) renderHealthChartStateLabels(x, width, y, h float64) {
-	const labelWidth = 38.0
+func healthChartLabelZoneWidth(d *document) float64 {
+	d.pdf.SetFont("plex", "", 7)
+	maxWidth := 0.0
+	for _, state := range knownHealthStates() {
+		maxWidth = maxFloat(maxWidth, d.pdf.GetStringWidth(d.tr.T(chartStateLabelKey(state))))
+	}
+	return maxWidth + 2*healthChartLabelPadding
+}
+
+func (d *document) renderHealthChartStateLabels(chartX, plotLeft, y, h float64) {
+	labelZoneRight := plotLeft - healthChartAxisGap - healthChartDataInset
+	labelBoxX := chartX + healthChartLabelPadding
+	labelBoxWidth := labelZoneRight - labelBoxX - healthChartLabelPadding
 	for _, state := range knownHealthStates() {
 		yy := chartY(y, h, state)
 		label := d.tr.T(chartStateLabelKey(state))
-		maxWidth := minFloat(labelWidth, width-2*healthChartLabelInset)
-		lines := d.splitText(label, maxWidth, "plex", "", 7)
-		lineHeight := 3.6
-		labelHeight := float64(len(lines)) * lineHeight
-		labelX := x + healthChartLabelInset
-		labelY := yy - labelHeight/2
-		setFillColor(d.pdf, d.palette.Background)
-		d.pdf.Rect(labelX-1, labelY-0.7, maxWidth+2, labelHeight+1.4, "F")
-		d.pdf.SetXY(labelX, labelY)
+		d.pdf.SetFont("plex", "", 7)
+		labelY := yy - 1.8
+		d.pdf.SetXY(labelBoxX, labelY)
 		setTextColor(d.pdf, d.palette.HealthState(state))
-		d.pdf.MultiCell(maxWidth, lineHeight, strings.Join(lines, "\n"), "", "L", false)
+		d.pdf.MultiCell(labelBoxWidth, 3.6, label, "", "R", false)
 	}
 }
 

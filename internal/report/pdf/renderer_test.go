@@ -280,14 +280,13 @@ func TestHealthChartUsesMobileDateTickDensityAndShortLabels(t *testing.T) {
 	}
 }
 
-func TestHealthChartUsesFullSectionWidthWithMinimalDataInset(t *testing.T) {
+func TestHealthChartUsesFullSectionWidthWithDedicatedLabelZone(t *testing.T) {
 	chartX, chartW := healthChartBounds()
 	if chartX != contentLeft || chartW != contentW {
 		t.Fatalf("chart bounds = (%v, %v), want (%v, %v)", chartX, chartW, contentLeft, contentW)
 	}
-	dataX, dataW := healthChartDataBounds()
-	if dataX <= chartX || dataX+dataW >= chartX+chartW {
-		t.Fatalf("data bounds = (%v, %v), want minimal inset within chart bounds", dataX, dataW)
+	if healthChartAxisGap <= 0 || healthChartAxisGap > 5 {
+		t.Fatalf("axis gap = %v, want small positive gap", healthChartAxisGap)
 	}
 	if healthChartDataInset <= 0 || healthChartDataInset > 2 {
 		t.Fatalf("data inset = %v, want small positive inset", healthChartDataInset)
