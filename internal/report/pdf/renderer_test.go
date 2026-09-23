@@ -2,6 +2,8 @@ package pdf
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,108 @@ func TestReportPaletteMirrorsMobileLightSemanticTokens(t *testing.T) {
 	}
 	if beeBasePalette.HealthState("GOOD") != (RGB{154, 93, 20}) || beeBasePalette.HealthState("WATCH") != (RGB{181, 101, 29}) || beeBasePalette.HealthState("CONCERN") != (RGB{199, 64, 45}) {
 		t.Fatalf("health semantic palette drifted: good=%+v watch=%+v concern=%+v", beeBasePalette.Good, beeBasePalette.Watch, beeBasePalette.Concern)
+	}
+	if zone := beeBasePalette.InsufficientDataZone(); zone == beeBasePalette.Good || zone == beeBasePalette.Watch || zone == beeBasePalette.Concern {
+		t.Fatalf("insufficient-data zone reused semantic health color: %+v", zone)
+	}
+	if want := (RGB{248, 244, 234}); beeBasePalette.InsufficientDataZone() != want {
+		t.Fatalf("insufficient-data zone = %+v, want Flutter Card-at-50%% blend %+v", beeBasePalette.InsufficientDataZone(), want)
+	}
+}
+
+func TestHealthSummaryUsesClearLocalizedMetricsAndNeutralCoverage(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, locale := range []string{"en", "uk"} {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pdf := fpdf.New("P", "mm", "A4", "")
+		pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+		pdf.AddUTF8FontFromBytes("plex", "B", renderer.bold)
+		pdf.AddPage()
+		doc := &document{pdf: pdf, tr: catalog, palette: beeBasePalette}
+		model := sampleReport(locale, 0)
+		model.Health.State = "UNKNOWN"
+		model.Health.Coverage = "NONE"
+		layout := doc.healthSummaryLayout(model)
+
+		if strings.Join(layout.labels[0], " ") != catalog.T("report.overall_health") {
+			t.Fatalf("%s overall label = %q", locale, strings.Join(layout.labels[0], " "))
+		}
+		if strings.Join(layout.labels[1], " ") != catalog.T("report.data_coverage") {
+			t.Fatalf("%s coverage label = %q", locale, strings.Join(layout.labels[1], " "))
+		}
+		if strings.Join(layout.explanation, " ") != catalog.T("report.data_coverage_explanation") {
+			t.Fatalf("%s coverage explanation = %q", locale, strings.Join(layout.explanation, " "))
+		}
+		if strings.Join(layout.values[0], " ") != catalog.Enum("UNKNOWN") || strings.Join(layout.values[1], " ") != catalog.Enum("NONE") {
+			t.Fatalf("%s explicit states were not localized: overall=%q coverage=%q", locale, layout.values[0], layout.values[1])
+		}
+		if got := healthSummaryValueColor(beeBasePalette, true, "UNKNOWN"); got != beeBasePalette.Unknown {
+			t.Fatalf("%s unknown color = %+v, want %+v", locale, got, beeBasePalette.Unknown)
+		}
+		if got := healthSummaryValueColor(beeBasePalette, false, "NONE"); got != beeBasePalette.TextPrimary {
+			t.Fatalf("%s coverage color = %+v, want neutral %+v", locale, got, beeBasePalette.TextPrimary)
+		}
+		if got := doc.measureHealthSummary(model); got <= 0 || got > contentW {
+			t.Fatalf("%s summary height = %v, want positive bounded height", locale, got)
+		}
+	}
+}
+
+func TestHealthSummaryWrapsLongExplanationWithinContentBounds(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := NewCatalog("en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddUTF8FontFromBytes("plex", "B", renderer.bold)
+	pdf.AddPage()
+	doc := &document{pdf: pdf, tr: catalog, palette: beeBasePalette}
+	lines := doc.splitText(strings.Repeat("inspection evidence and recency ", 20), contentW, "plex", "", 8)
+	if len(lines) < 2 {
+		t.Fatal("long health explanation did not wrap")
+	}
+	for _, line := range lines {
+		if width := pdf.GetStringWidth(line); width > contentW+fitEpsilon {
+			t.Fatalf("wrapped explanation width = %v, exceeds content width %v", width, contentW)
+		}
+	}
+}
+
+func TestGeneratedDateIsLocalizedDateOnly(t *testing.T) {
+	instant := time.Date(2026, 9, 23, 10, 34, 56, 0, time.UTC)
+	if got, want := formatTimeDate(instant, "en"), "23 Sep 2026"; got != want {
+		t.Fatalf("English generated date = %q, want %q", got, want)
+	}
+	if got, want := formatTimeDate(instant, "uk"), "23 вер 2026"; got != want {
+		t.Fatalf("Ukrainian generated date = %q, want %q", got, want)
+	}
+	for _, locale := range []string{"en", "uk"} {
+		value := formatTimeDate(instant, locale)
+		if strings.Contains(value, "10:34") || strings.Contains(value, "UTC") || strings.Contains(value, "+") || strings.Contains(value, "-") {
+			t.Fatalf("%s generated date contains time or timezone data: %q", locale, value)
+		}
+	}
+}
+
+func TestGeneratedDatePreservesExistingCalendarDayNearTimezoneBoundary(t *testing.T) {
+	localZone := time.FixedZone("UTC-4", -4*60*60)
+	instant := time.Date(2026, 9, 23, 23, 59, 59, 0, localZone)
+	if got, want := formatTimeDate(instant, "en"), "23 Sep 2026"; got != want {
+		t.Fatalf("generated date = %q, want existing local calendar date %q", got, want)
+	}
+	if got := formatTimeDate(instant.UTC(), "en"); got == "23 Sep 2026" {
+		t.Fatalf("boundary setup did not cross UTC date: UTC date = %q", got)
 	}
 }
 
@@ -70,6 +174,100 @@ func TestChartLabelXKeepsDateLabelsInsideSafeBounds(t *testing.T) {
 				t.Fatalf("label bounds [%v, %v] escaped chart bounds [%v, %v]", got, got+tt.labelW, chartX, chartX+chartW)
 			}
 		})
+	}
+}
+
+func TestHealthChartHasOnlyEvaluativeStatesOnAxis(t *testing.T) {
+	states := knownHealthStates()
+	if len(states) != 3 || states[0] != "GOOD" || states[1] != "WATCH" || states[2] != "CONCERN" {
+		t.Fatalf("health chart states = %v, want GOOD/WATCH/CONCERN", states)
+	}
+	if isKnownHealthState("UNKNOWN") {
+		t.Fatal("UNKNOWN must not have a health-state chart coordinate")
+	}
+	if got := chartY(10, 60, "GOOD"); got != 10 {
+		t.Fatalf("GOOD chart Y = %v, want top rail 10", got)
+	}
+	if got := chartY(10, 60, "WATCH"); got != 40 {
+		t.Fatalf("WATCH chart Y = %v, want middle rail 40", got)
+	}
+	if got := chartY(10, 60, "CONCERN"); got != 70 {
+		t.Fatalf("CONCERN chart Y = %v, want bottom rail 70", got)
+	}
+	if got := chartY(10, 60, "UNKNOWN"); !math.IsNaN(got) {
+		t.Fatalf("UNKNOWN chart Y = %v, want no chart coordinate", got)
+	}
+}
+
+func TestHealthChartUnknownRunsUseIndependentHalfDayZones(t *testing.T) {
+	points := []report.HealthHistoryPointData{
+		{Date: "2026-01-01", State: "UNKNOWN"},
+		{Date: "2026-01-02", State: "GOOD"},
+		{Date: "2026-01-03", State: "UNKNOWN"},
+		{Date: "2026-01-04", State: "CONCERN"},
+		{Date: "2026-01-05", State: "UNKNOWN"},
+	}
+	runs := unknownHealthRuns(points)
+	if len(runs) != 3 {
+		t.Fatalf("unknown runs = %v, want three independent runs", runs)
+	}
+	for index, want := range []healthChartRun{{start: 0, end: 0}, {start: 2, end: 2}, {start: 4, end: 4}} {
+		if runs[index] != want {
+			t.Fatalf("unknown run %d = %+v, want %+v", index, runs[index], want)
+		}
+	}
+	segments := knownHealthSegments(points)
+	if len(segments) != 2 || segments[0].start != 1 || segments[1].start != 3 {
+		t.Fatalf("known segments = %+v, want segments starting at 1 and 3", segments)
+	}
+	if left, width := unknownChartBounds(runs[0], len(points)-1, contentW); left != 0 || width != contentW/8 {
+		t.Fatalf("initial unknown bounds = (%v, %v), want (0, %v)", left, width, contentW/8)
+	}
+}
+
+func TestHealthChartUnknownPresentationIsLocalizedAndNotRawEnum(t *testing.T) {
+	for locale, want := range map[string]string{"en": "Insufficient data", "uk": "Недостатньо даних"} {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := catalog.T("report.insufficient_data"); got != want {
+			t.Fatalf("%s insufficient-data label = %q, want %q", locale, got, want)
+		}
+		if got := catalog.T("report.insufficient_data"); got == "UNKNOWN" {
+			t.Fatalf("%s leaked raw UNKNOWN enum", locale)
+		}
+	}
+}
+
+func TestHealthChartUnknownFixturesRenderWithoutChangingHistoryData(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[string][]string{
+		"initial":  {"UNKNOWN", "UNKNOWN", "CONCERN", "WATCH"},
+		"middle":   {"GOOD", "UNKNOWN", "UNKNOWN", "WATCH"},
+		"trailing": {"GOOD", "WATCH", "UNKNOWN"},
+		"multiple": {"UNKNOWN", "GOOD", "UNKNOWN", "CONCERN", "UNKNOWN"},
+		"all":      {"UNKNOWN", "UNKNOWN", "UNKNOWN"},
+	}
+	for name, states := range fixtures {
+		model := sampleReport("en", 0)
+		model.HealthHistory.Points = make([]report.HealthHistoryPointData, len(states))
+		for index, state := range states {
+			model.HealthHistory.Points[index] = report.HealthHistoryPointData{Date: fmt.Sprintf("2026-01-%02d", index+1), State: state}
+		}
+		content, err := renderer.Render(context.Background(), model)
+		if err != nil {
+			t.Fatalf("%s fixture Render() error = %v", name, err)
+		}
+		assertPDF(t, content)
+		if dir := os.Getenv("REPORT_SAMPLE_DIR"); dir != "" {
+			if err := os.WriteFile(filepath.Join(dir, "health-history-"+name+".pdf"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
 
@@ -392,6 +590,35 @@ func TestRendererProducesUkrainianPDFAndEmptyStates(t *testing.T) {
 	if dir := os.Getenv("REPORT_SAMPLE_DIR"); dir != "" {
 		if err := os.WriteFile(filepath.Join(dir, "hive-report-uk.pdf"), content, 0o600); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestRendererProducesHealthSummaryStatePreviews(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct {
+		name     string
+		state    string
+		coverage string
+	}{
+		{name: "watch-high", state: "WATCH", coverage: "HIGH"},
+		{name: "unknown-none", state: "UNKNOWN", coverage: "NONE"},
+	} {
+		model := sampleReport("en", 0)
+		model.Health.State = fixture.state
+		model.Health.Coverage = fixture.coverage
+		content, err := renderer.Render(context.Background(), model)
+		if err != nil {
+			t.Fatalf("%s Render() error = %v", fixture.name, err)
+		}
+		assertPDF(t, content)
+		if dir := os.Getenv("REPORT_SAMPLE_DIR"); dir != "" {
+			if err := os.WriteFile(filepath.Join(dir, "hive-report-"+fixture.name+".pdf"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }

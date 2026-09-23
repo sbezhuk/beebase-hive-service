@@ -47,3 +47,14 @@ func (p ReportPalette) HealthState(state string) RGB {
 		return p.Unknown
 	}
 }
+
+// InsufficientDataZone mirrors the Flutter chart's neutral Card surface at
+// 50% opacity over the light report page background. It is intentionally not
+// one of the semantic health-state colors.
+func (p ReportPalette) InsufficientDataZone() RGB {
+	return RGB{
+		R: (p.Card.R + 255) / 2,
+		G: (p.Card.G + 255) / 2,
+		B: (p.Card.B + 255) / 2,
+	}
+}
