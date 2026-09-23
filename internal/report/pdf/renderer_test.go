@@ -432,6 +432,76 @@ func TestFullWidthDividerBoundsAreCanonical(t *testing.T) {
 	}
 }
 
+func TestHeaderQRGeometryStaysInsideCanonicalContentBounds(t *testing.T) {
+	qrX, captionX := hiveQRBounds()
+	if qrX != contentRight-hiveQRCodeSize || qrX+hiveQRCodeSize != contentRight {
+		t.Fatalf("QR bounds = (%v, %v), want right edge %v", qrX, qrX+hiveQRCodeSize, contentRight)
+	}
+	if captionX != contentRight-hiveQRCaptionWidth || captionX+hiveQRCaptionWidth != contentRight {
+		t.Fatalf("QR caption bounds = (%v, %v), want right edge %v", captionX, captionX+hiveQRCaptionWidth, contentRight)
+	}
+	if qrX < contentLeft || captionX < contentLeft {
+		t.Fatalf("QR geometry escaped left content bound: image=%v caption=%v left=%v", qrX, captionX, contentLeft)
+	}
+}
+
+func TestOpticalTextAlignmentUsesEmbeddedGlyphBounds(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer() error = %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		metric ttfMetrics
+		text   string
+		size   float64
+	}{
+		{name: "english bold H", metric: renderer.boldMetric, text: "Health History", size: 15},
+		{name: "english bold C", metric: renderer.boldMetric, text: "Colony Health", size: 15},
+		{name: "english regular I", metric: renderer.regularMetric, text: "Inspections", size: 9},
+		{name: "english bold Q", metric: renderer.boldMetric, text: "Queen History", size: 15},
+		{name: "english bold S", metric: renderer.boldMetric, text: "Summary", size: 15},
+		{name: "ukrainian bold", metric: renderer.boldMetric, text: "Історія здоров'я", size: 15},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			offset := test.metric.leftInkOffset(test.text, test.size/72*25.4)
+			if offset <= 0 {
+				t.Fatalf("leftInkOffset(%q) = %f, want a positive embedded-glyph bearing", test.text, offset)
+			}
+			drawOrigin := contentLeft - offset
+			visibleLeft := drawOrigin + offset
+			if math.Abs(visibleLeft-contentLeft) > fitEpsilon {
+				t.Fatalf("visible left = %f, want contentLeft %f", visibleLeft, contentLeft)
+			}
+		})
+	}
+}
+
+func TestOpticalTextAlignmentKeepsLogicalRightBoundary(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer() error = %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		metric ttfMetrics
+		text   string
+		size   float64
+	}{
+		{name: "english title", metric: renderer.boldMetric, text: "Hive Report", size: 23},
+		{name: "ukrainian title", metric: renderer.boldMetric, text: "Звіт про вулик", size: 23},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			offset := test.metric.leftInkOffset(test.text, test.size/72*25.4)
+			drawOrigin := contentLeft - offset
+			logicalWidth := 125 + offset
+			if drawOrigin+logicalWidth > contentLeft+125+fitEpsilon {
+				t.Fatalf("logical right = %f, want <= %f", drawOrigin+logicalWidth, contentLeft+125)
+			}
+		})
+	}
+}
+
 func TestReportTablesUseSafeContentWidth(t *testing.T) {
 	for name, widths := range map[string][]float64{
 		"health":         healthTableWidths(),

@@ -53,6 +53,8 @@ const (
 	healthLegendIndicatorGap        = 2.0
 	healthLegendItemGap             = 7.0
 	healthLegendIndicatorCenter     = 2.5
+	hiveQRCodeSize                  = 34.0
+	hiveQRCaptionWidth              = 36.0
 	totalBlockGap                   = 2.0
 	totalLabelHeight                = 6.0
 	healthMetricGap                 = 10.0
@@ -63,8 +65,10 @@ const (
 )
 
 type Renderer struct {
-	regular []byte
-	bold    []byte
+	regular       []byte
+	bold          []byte
+	regularMetric ttfMetrics
+	boldMetric    ttfMetrics
 }
 
 type tableStyle struct {
@@ -90,7 +94,15 @@ func NewRenderer() (*Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load bold report font: %w", err)
 	}
-	return &Renderer{regular: regular, bold: bold}, nil
+	regularMetric, err := parseTTFMetrics(regular)
+	if err != nil {
+		return nil, fmt.Errorf("parse regular report font metrics: %w", err)
+	}
+	boldMetric, err := parseTTFMetrics(bold)
+	if err != nil {
+		return nil, fmt.Errorf("parse bold report font metrics: %w", err)
+	}
+	return &Renderer{regular: regular, bold: bold, regularMetric: regularMetric, boldMetric: boldMetric}, nil
 }
 
 func (r *Renderer) Render(ctx context.Context, model *report.HiveReport) ([]byte, error) {
@@ -116,7 +128,14 @@ func (r *Renderer) Render(ctx context.Context, model *report.HiveReport) ([]byte
 		pdf.CellFormat(contentW, 5, strconv.Itoa(pdf.PageNo()), "", 0, "R", false, 0, "")
 	})
 	pdf.AddPage()
-	doc := &document{pdf: pdf, tr: tr, ctx: ctx, palette: beeBasePalette}
+	doc := &document{
+		pdf:           pdf,
+		tr:            tr,
+		ctx:           ctx,
+		palette:       beeBasePalette,
+		regularMetric: r.regularMetric,
+		boldMetric:    r.boldMetric,
+	}
 	if err := doc.header(model); err != nil {
 		return nil, err
 	}
@@ -155,12 +174,14 @@ func (r *Renderer) Render(ctx context.Context, model *report.HiveReport) ([]byte
 func HiveQRPayload(hiveID string) string { return "beebase://hive/v1/" + hiveID }
 
 type document struct {
-	pdf      *fpdf.Fpdf
-	tr       Catalog
-	ctx      context.Context
-	palette  ReportPalette
-	sections int
-	table    *tableState
+	pdf           *fpdf.Fpdf
+	tr            Catalog
+	ctx           context.Context
+	palette       ReportPalette
+	regularMetric ttfMetrics
+	boldMetric    ttfMetrics
+	sections      int
+	table         *tableState
 }
 
 type tableState struct {
@@ -192,25 +213,25 @@ func (d *document) header(model *report.HiveReport) error {
 	}
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 23)
-	d.pdf.CellFormat(125, 10, d.tr.T("report.title"), "", 1, "L", false, 0, "")
+	d.opticalCell(125, 10, d.tr.T("report.title"), "B", 1)
 	if model.Hive.ApiaryName != nil && strings.TrimSpace(*model.Hive.ApiaryName) != "" {
 		d.pdf.SetFont("plex", "B", 12)
 		setTextColor(d.pdf, d.palette.TextSecondary)
-		d.pdf.MultiCell(125, 6, strings.TrimSpace(*model.Hive.ApiaryName), "", "L", false)
+		d.opticalMultiCell(125, 6, strings.TrimSpace(*model.Hive.ApiaryName), "B")
 	}
 	d.pdf.SetFont("plex", "B", 14)
 	setTextColor(d.pdf, d.palette.TextPrimary)
-	d.pdf.MultiCell(125, 7, model.Hive.Name, "", "L", false)
+	d.opticalMultiCell(125, 7, model.Hive.Name, "B")
 	setDrawColor(d.pdf, d.palette.Border)
 	d.fullWidthDivider(d.pdf.GetY() + 2)
 	d.pdf.SetY(d.pdf.GetY() + 8)
 	d.setBody()
-	d.pdf.CellFormat(37, 6, d.tr.T("report.period"), "", 0, "L", false, 0, "")
+	d.opticalCell(37, 6, d.tr.T("report.period"), "", 0)
 	d.pdf.CellFormat(70, 6, formatDate(model.Metadata.From.String(), d.tr.Locale)+" - "+formatDate(model.Metadata.To.String(), d.tr.Locale), "", 1, "L", false, 0, "")
-	d.pdf.CellFormat(37, 6, d.tr.T("report.generated_at"), "", 0, "L", false, 0, "")
+	d.opticalCell(37, 6, d.tr.T("report.generated_at"), "", 0)
 	d.pdf.CellFormat(70, 6, formatTimeDate(model.Metadata.GeneratedAt, d.tr.Locale), "", 1, "L", false, 0, "")
 	if model.Hive.Notes != "" {
-		d.pdf.CellFormat(37, 6, "", "", 0, "L", false, 0, "")
+		d.pdf.SetX(contentLeft + 37)
 		d.pdf.MultiCell(100, 6, model.Hive.Notes, "", "L", false)
 	}
 	if err := d.qr(model.Hive.ID.String()); err != nil {
@@ -228,16 +249,20 @@ func (d *document) qr(hiveID string) error {
 		return fmt.Errorf("%w: generate hive QR: %v", ErrRender, err)
 	}
 	d.pdf.RegisterImageOptionsReader("hive-qr", fpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}, bytes.NewReader(image))
-	x := pageWidth - margin - 34
+	qrX, captionX := hiveQRBounds()
 	y := margin + 5
-	d.pdf.ImageOptions("hive-qr", x, y, 34, 34, false, fpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}, 0, "")
-	d.pdf.SetXY(x-1, y+35)
+	d.pdf.ImageOptions("hive-qr", qrX, y, hiveQRCodeSize, hiveQRCodeSize, false, fpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}, 0, "")
+	d.pdf.SetXY(captionX, y+hiveQRCodeSize+1)
 	d.pdf.SetFont("plex", "", 7)
 	setTextColor(d.pdf, d.palette.TextSecondary)
-	d.pdf.MultiCell(36, 3, d.tr.T("report.qr_instruction"), "", "C", false)
+	d.pdf.MultiCell(hiveQRCaptionWidth, 3, d.tr.T("report.qr_instruction"), "", "C", false)
 	d.pdf.SetY(contentY)
 	d.setBody()
 	return nil
+}
+
+func hiveQRBounds() (qrX, captionX float64) {
+	return contentRight - hiveQRCodeSize, contentRight - hiveQRCaptionWidth
 }
 
 func (d *document) section(title string, minimumContentHeight float64) error {
@@ -256,7 +281,8 @@ func (d *document) section(title string, minimumContentHeight float64) error {
 	}
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 15)
-	d.pdf.CellFormat(contentW, sectionTitleHeight, title, "", 1, "L", false, 0, "")
+	d.pdf.SetX(contentLeft)
+	d.opticalCell(contentW, sectionTitleHeight, title, "B", 1)
 	d.fullWidthDivider(d.pdf.GetY())
 	d.pdf.Ln(sectionContentGap)
 	d.setBody()
@@ -348,7 +374,7 @@ func (d *document) renderHealthSummary(model *report.HiveReport) {
 	d.pdf.SetXY(contentLeft, startY+layout.metricHeight+healthExplanationGap)
 	d.pdf.SetFont("plex", "", 8)
 	setTextColor(d.pdf, d.palette.TextSecondary)
-	d.pdf.MultiCell(contentW, healthExplanationLineH, strings.Join(layout.explanation, "\n"), "", "L", false)
+	d.opticalMultiCell(contentW, healthExplanationLineH, strings.Join(layout.explanation, "\n"), "")
 	d.pdf.SetY(startY + d.measureHealthSummary(model))
 	d.setBody()
 }
@@ -1189,8 +1215,40 @@ func displayCellValue(value string) string {
 func (d *document) empty(value string) {
 	setTextColor(d.pdf, d.palette.TextSecondary)
 	d.pdf.SetFont("plex", "", 9)
-	d.pdf.MultiCell(contentW, 6, value, "", "L", false)
+	d.opticalMultiCell(contentW, 6, value, "")
 	d.setBody()
+}
+
+// opticalCell and opticalMultiCell compensate only for the actual left ink
+// bearing of the first glyph. They are limited to text whose logical left edge
+// is the report content boundary; table and chart text keeps its internal
+// padding and geometry.
+func (d *document) opticalCell(width, height float64, text, style string, ln int) {
+	x, y := d.pdf.GetXY()
+	offset := d.inkOffset(text, style)
+	d.pdf.SetXY(x-offset, y)
+	d.pdf.CellFormat(width+offset, height, text, "", ln, "L", false, 0, "")
+	if ln == 0 {
+		d.pdf.SetXY(x+width, y)
+	} else {
+		d.pdf.SetX(x)
+	}
+}
+
+func (d *document) opticalMultiCell(width, height float64, text, style string) {
+	x, y := d.pdf.GetXY()
+	offset := d.inkOffset(text, style)
+	d.pdf.SetXY(x-offset, y)
+	d.pdf.MultiCell(width+offset, height, text, "", "L", false)
+	d.pdf.SetX(x)
+}
+
+func (d *document) inkOffset(text, style string) float64 {
+	_, unitSize := d.pdf.GetFontSize()
+	if style == "B" {
+		return d.boldMetric.leftInkOffset(text, unitSize)
+	}
+	return d.regularMetric.leftInkOffset(text, unitSize)
 }
 
 func setTextColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetTextColor(color.R, color.G, color.B) }
