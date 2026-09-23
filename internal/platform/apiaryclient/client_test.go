@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
+	appreport "github.com/sbezhuk/beebase-hive-service/internal/application/report"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
 )
 
@@ -36,6 +37,30 @@ func TestClient_Verify_OwnedAndWritable(t *testing.T) {
 	}
 	if !writable {
 		t.Error("writable = false, want true")
+	}
+}
+
+func TestInternalClient_GetDisplayInfoUsesServiceTokenAndTypedProjection(t *testing.T) {
+	apiaryID := uuid.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer internal-secret" {
+			t.Errorf("Authorization = %q, want internal bearer token", got)
+		}
+		if r.URL.Path != "/internal/api/v1/apiaries/"+apiaryID.String()+"/display-info" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": apiaryID, "name": "Home Apiary"})
+	}))
+	defer srv.Close()
+
+	client := apiaryclient.NewInternal(srv.URL, "internal-secret")
+	got, err := client.GetDisplayInfo(context.Background(), apiaryID)
+	if err != nil {
+		t.Fatalf("GetDisplayInfo: %v", err)
+	}
+	if got != (appreport.ApiaryDisplayInfo{ID: apiaryID, Name: "Home Apiary"}) {
+		t.Fatalf("display info = %+v", got)
 	}
 }
 

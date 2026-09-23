@@ -37,20 +37,29 @@ type HarvestReader interface {
 	GetReportData(context.Context, uuid.UUID, time.Time, time.Time) (HarvestReportResponse, error)
 }
 
+type ApiaryReader interface {
+	GetDisplayInfo(context.Context, uuid.UUID) (ApiaryDisplayInfo, error)
+}
+
 type Service struct {
 	hives             HiveReader
 	queens            QueenHistoryReader
 	entitlements      EntitlementReader
 	inspections       InspectionReader
 	harvests          HarvestReader
+	apiaries          ApiaryReader
 	dependencyTimeout time.Duration
 	now               func() time.Time
 }
 
-func NewService(hives HiveReader, queens QueenHistoryReader, entitlements EntitlementReader, inspections InspectionReader, harvests HarvestReader) *Service {
+func NewService(hives HiveReader, queens QueenHistoryReader, entitlements EntitlementReader, inspections InspectionReader, harvests HarvestReader, apiaries ...ApiaryReader) *Service {
+	var apiaryReader ApiaryReader
+	if len(apiaries) > 0 {
+		apiaryReader = apiaries[0]
+	}
 	return &Service{
 		hives: hives, queens: queens, entitlements: entitlements,
-		inspections: inspections, harvests: harvests,
+		inspections: inspections, harvests: harvests, apiaries: apiaryReader,
 		dependencyTimeout: 5 * time.Second, now: time.Now,
 	}
 }
@@ -81,15 +90,21 @@ func (s *Service) Assemble(ctx context.Context, userID uuid.UUID, accessToken st
 		return nil, fmt.Errorf("%w: load queen history: %v", ErrReportGenerationUnavailable, err)
 	}
 
-	inspectionResponse, harvestResponse, err := s.collectDependencies(ctx, hiveID, period)
+	inspectionResponse, harvestResponse, apiaryInfo, err := s.collectDependencies(ctx, hiveID, hive.ApiaryID, period)
 	if err != nil {
 		return nil, err
+	}
+
+	var apiaryName *string
+	if apiaryInfo != nil {
+		name := apiaryInfo.Name
+		apiaryName = &name
 	}
 
 	return &HiveReport{
 		Metadata: ReportMetadata{From: period.From, To: period.To, Locale: locale, GeneratedAt: s.now().UTC()},
 		Hive: HiveData{
-			ID: hive.ID, ApiaryID: hive.ApiaryID, Name: hive.Name, Notes: hive.Notes,
+			ID: hive.ID, ApiaryID: hive.ApiaryID, ApiaryName: apiaryName, Name: hive.Name, Notes: hive.Notes,
 			CreatedAt: hive.CreatedAt, UpdatedAt: hive.UpdatedAt,
 		},
 		Queens:        mapQueens(queens, period),
@@ -101,15 +116,20 @@ func (s *Service) Assemble(ctx context.Context, userID uuid.UUID, accessToken st
 	}, nil
 }
 
-func (s *Service) collectDependencies(ctx context.Context, hiveID uuid.UUID, period Period) (InspectionReportResponse, HarvestReportResponse, error) {
+func (s *Service) collectDependencies(ctx context.Context, hiveID, apiaryID uuid.UUID, period Period) (InspectionReportResponse, HarvestReportResponse, *ApiaryDisplayInfo, error) {
 	dependencyCtx, cancel := context.WithTimeout(ctx, s.dependencyTimeout)
 	defer cancel()
 	type result struct {
 		inspection *InspectionReportResponse
 		harvest    *HarvestReportResponse
+		apiary     *ApiaryDisplayInfo
 		err        error
 	}
-	results := make(chan result, 2)
+	count := 2
+	if s.apiaries != nil {
+		count++
+	}
+	results := make(chan result, count)
 	go func() {
 		value, err := s.inspections.GetReportData(dependencyCtx, hiveID, period.From, period.To)
 		results <- result{inspection: &value, err: err}
@@ -118,22 +138,31 @@ func (s *Service) collectDependencies(ctx context.Context, hiveID uuid.UUID, per
 		value, err := s.harvests.GetReportData(dependencyCtx, hiveID, period.From, period.To)
 		results <- result{harvest: &value, err: err}
 	}()
+	if s.apiaries != nil {
+		go func() {
+			value, err := s.apiaries.GetDisplayInfo(dependencyCtx, apiaryID)
+			results <- result{apiary: &value, err: err}
+		}()
+	}
 
 	var inspectionResponse InspectionReportResponse
 	var harvestResponse HarvestReportResponse
-	for range 2 {
+	var apiaryInfo *ApiaryDisplayInfo
+	for range count {
 		item := <-results
 		if item.err != nil {
 			cancel()
-			return InspectionReportResponse{}, HarvestReportResponse{}, fmt.Errorf("%w: %v", ErrReportGenerationUnavailable, item.err)
+			return InspectionReportResponse{}, HarvestReportResponse{}, nil, fmt.Errorf("%w: %v", ErrReportGenerationUnavailable, item.err)
 		}
 		if item.inspection != nil {
 			inspectionResponse = *item.inspection
-		} else {
+		} else if item.harvest != nil {
 			harvestResponse = *item.harvest
+		} else {
+			apiaryInfo = item.apiary
 		}
 	}
-	return inspectionResponse, harvestResponse, nil
+	return inspectionResponse, harvestResponse, apiaryInfo, nil
 }
 
 func validatePeriod(period Period) error {

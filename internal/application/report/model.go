@@ -37,6 +37,11 @@ type HiveData struct {
 	UpdatedAt  time.Time
 }
 
+type ApiaryDisplayInfo struct {
+	ID   uuid.UUID
+	Name string
+}
+
 type QueenData struct {
 	ID                uuid.UUID
 	MarkedAt          time.Time

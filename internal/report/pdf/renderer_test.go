@@ -20,6 +20,15 @@ func TestHiveQRPayloadIsCanonical(t *testing.T) {
 	}
 }
 
+func TestReportPaletteMirrorsMobileLightSemanticTokens(t *testing.T) {
+	if beeBasePalette.Brand != (RGB{232, 172, 61}) || beeBasePalette.TextPrimary != (RGB{43, 27, 14}) {
+		t.Fatalf("brand/text palette drifted: %+v / %+v", beeBasePalette.Brand, beeBasePalette.TextPrimary)
+	}
+	if beeBasePalette.HealthState("GOOD") != (RGB{154, 93, 20}) || beeBasePalette.HealthState("WATCH") != (RGB{181, 101, 29}) || beeBasePalette.HealthState("CONCERN") != (RGB{199, 64, 45}) {
+		t.Fatalf("health semantic palette drifted: good=%+v watch=%+v concern=%+v", beeBasePalette.Good, beeBasePalette.Watch, beeBasePalette.Concern)
+	}
+}
+
 func TestRendererProducesValidEnglishPDFWithAllSections(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
@@ -92,7 +101,7 @@ func sampleReport(locale string, records int) *report.HiveReport {
 	hiveID := uuid.New()
 	model := &report.HiveReport{
 		Metadata:      report.ReportMetadata{From: date("2026-01-01"), To: date("2026-12-31"), Locale: locale, GeneratedAt: dateTime("2026-09-22T10:30:00Z")},
-		Hive:          report.HiveData{ID: hiveID, ApiaryID: uuid.New(), Name: "Вулик №1", Notes: "Зразкові нотатки", CreatedAt: date("2025-01-01"), UpdatedAt: date("2026-01-01")},
+		Hive:          report.HiveData{ID: hiveID, ApiaryID: uuid.New(), ApiaryName: stringPtr("Пасіка з дуже довгою назвою для перевірки переносу"), Name: "Вулик №1", Notes: "Зразкові нотатки", CreatedAt: date("2025-01-01"), UpdatedAt: date("2026-01-01")},
 		Health:        report.HealthData{State: "GOOD", Coverage: "HIGH", Dimensions: []report.HealthDimensionData{{Dimension: "STRENGTH", State: "GOOD", Coverage: "HIGH", Sources: []report.HealthEvidenceSourceData{{InspectionID: uuid.New(), InspectedAt: "2026-06-01"}}}}},
 		HealthHistory: report.HealthHistoryData{From: "2026-01-01", To: "2026-12-31", Points: []report.HealthHistoryPointData{{Date: "2026-01-01", State: "UNKNOWN"}, {Date: "2026-06-01", State: "GOOD"}, {Date: "2026-12-31", State: "WATCH"}}},
 		Queens:        []report.QueenData{{ID: uuid.New(), MarkedAt: date("2025-01-01"), IntroducedAt: date("2025-02-01"), Year: 2025, MarkingColor: "blue", MarkingColorHex: "#A7C7F7", Current: true}},

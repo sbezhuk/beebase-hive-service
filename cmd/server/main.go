@@ -107,6 +107,7 @@ func run() error {
 		subscriptionClient,
 		inspectionclient.NewInternal(cfg.InspectionServiceURL, cfg.InternalServiceToken),
 		harvestclient.NewInternal(cfg.HarvestServiceURL, cfg.InternalServiceToken),
+		apiaryclient.NewInternal(cfg.ApiaryServiceURL, cfg.InternalServiceToken),
 	)
 	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notifications, reportService, reportRenderer)
 	queenHandler := queenhttp.NewHandler(queenService, log)

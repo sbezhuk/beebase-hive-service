@@ -64,11 +64,11 @@ func (r *Renderer) Render(ctx context.Context, model *report.HiveReport) ([]byte
 	pdf.SetFooterFunc(func() {
 		pdf.SetY(pageHeight - 10)
 		pdf.SetFont("plex", "", 8)
-		pdf.SetTextColor(120, 130, 140)
+		setTextColor(pdf, beeBasePalette.TextSecondary)
 		pdf.CellFormat(contentW, 5, strconv.Itoa(pdf.PageNo()), "", 0, "R", false, 0, "")
 	})
 	pdf.AddPage()
-	doc := &document{pdf: pdf, tr: tr, ctx: ctx}
+	doc := &document{pdf: pdf, tr: tr, ctx: ctx, palette: beeBasePalette}
 	if err := doc.header(model); err != nil {
 		return nil, err
 	}
@@ -107,9 +107,10 @@ func (r *Renderer) Render(ctx context.Context, model *report.HiveReport) ([]byte
 func HiveQRPayload(hiveID string) string { return "beebase://hive/v1/" + hiveID }
 
 type document struct {
-	pdf *fpdf.Fpdf
-	tr  Catalog
-	ctx context.Context
+	pdf     *fpdf.Fpdf
+	tr      Catalog
+	ctx     context.Context
+	palette ReportPalette
 }
 
 func (d *document) check() error {
@@ -121,20 +122,25 @@ func (d *document) check() error {
 
 func (d *document) setBody() {
 	d.pdf.SetFont("plex", "", 9)
-	d.pdf.SetTextColor(45, 55, 65)
+	setTextColor(d.pdf, d.palette.TextPrimary)
 }
 
 func (d *document) header(model *report.HiveReport) error {
 	if err := d.check(); err != nil {
 		return err
 	}
-	d.pdf.SetTextColor(35, 55, 72)
+	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 23)
-	d.pdf.CellFormat(130, 10, d.tr.T("report.title"), "", 1, "L", false, 0, "")
+	d.pdf.CellFormat(125, 10, d.tr.T("report.title"), "", 1, "L", false, 0, "")
+	if model.Hive.ApiaryName != nil && strings.TrimSpace(*model.Hive.ApiaryName) != "" {
+		d.pdf.SetFont("plex", "B", 12)
+		setTextColor(d.pdf, d.palette.TextSecondary)
+		d.pdf.MultiCell(125, 6, strings.TrimSpace(*model.Hive.ApiaryName), "", "L", false)
+	}
 	d.pdf.SetFont("plex", "B", 14)
-	d.pdf.SetTextColor(60, 75, 86)
-	d.pdf.CellFormat(130, 8, model.Hive.Name, "", 1, "L", false, 0, "")
-	d.pdf.SetDrawColor(205, 215, 220)
+	setTextColor(d.pdf, d.palette.TextPrimary)
+	d.pdf.MultiCell(125, 7, model.Hive.Name, "", "L", false)
+	setDrawColor(d.pdf, d.palette.Border)
 	d.pdf.Line(margin, d.pdf.GetY()+2, pageWidth-margin, d.pdf.GetY()+2)
 	d.pdf.SetY(d.pdf.GetY() + 8)
 	d.setBody()
@@ -170,7 +176,7 @@ func (d *document) qr(hiveID string) error {
 	d.pdf.ImageOptions("hive-qr", x, y, 34, 34, false, fpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}, 0, "")
 	d.pdf.SetXY(x-1, y+35)
 	d.pdf.SetFont("plex", "", 7)
-	d.pdf.SetTextColor(80, 90, 98)
+	setTextColor(d.pdf, d.palette.TextSecondary)
 	d.pdf.MultiCell(36, 3, d.tr.T("report.qr_instruction"), "", "C", false)
 	d.pdf.SetY(contentY)
 	d.setBody()
@@ -184,10 +190,10 @@ func (d *document) section(title string) error {
 	if d.pdf.GetY() > pageHeight-42 {
 		d.pdf.AddPage()
 	}
-	d.pdf.SetTextColor(35, 55, 72)
+	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 15)
 	d.pdf.CellFormat(contentW, 8, title, "", 1, "L", false, 0, "")
-	d.pdf.SetDrawColor(110, 160, 165)
+	setDrawColor(d.pdf, d.palette.Brand)
 	d.pdf.SetLineWidth(0.7)
 	d.pdf.Line(margin, d.pdf.GetY(), pageWidth-margin, d.pdf.GetY())
 	d.pdf.Ln(4)
@@ -201,8 +207,9 @@ func (d *document) health(model *report.HiveReport) error {
 	}
 	d.pdf.SetFont("plex", "B", 10)
 	d.pdf.CellFormat(35, 6, d.tr.T("report.state"), "", 0, "L", false, 0, "")
-	d.setBody()
+	setTextColor(d.pdf, d.palette.HealthState(model.Health.State))
 	d.pdf.CellFormat(45, 6, d.tr.Enum(model.Health.State), "", 0, "L", false, 0, "")
+	d.setBody()
 	d.pdf.SetFont("plex", "B", 10)
 	d.pdf.CellFormat(35, 6, d.tr.T("report.coverage"), "", 0, "L", false, 0, "")
 	d.setBody()
@@ -234,14 +241,14 @@ func (d *document) history(model *report.HiveReport) error {
 
 func (d *document) chart(points []report.HealthHistoryPointData) {
 	x, y, w, h := margin, d.pdf.GetY(), contentW, 54.0
-	d.pdf.SetDrawColor(220, 226, 230)
+	setDrawColor(d.pdf, d.palette.Border)
 	d.pdf.SetLineWidth(0.25)
 	for i := 0; i <= 3; i++ {
 		yy := y + h - float64(i)*h/3
 		d.pdf.Line(x, yy, x+w, yy)
 	}
 	d.pdf.SetFont("plex", "", 7)
-	d.pdf.SetTextColor(100, 110, 118)
+	setTextColor(d.pdf, d.palette.TextSecondary)
 	for i, state := range []string{"CONCERN", "WATCH", "GOOD", "UNKNOWN"} {
 		yy := y + h - float64(i)*h/3 - 1
 		d.pdf.Text(x, yy, d.tr.Enum(state))
@@ -249,13 +256,13 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	if len(points) == 1 {
 		px := x + w/2
 		py := chartY(y, h, points[0].State)
-		d.pdf.SetFillColor(58, 126, 131)
+		setFillColor(d.pdf, d.palette.HealthState(points[0].State))
 		d.pdf.Circle(px, py, 1.7, "F")
 	} else {
 		for i := 1; i < len(points); i++ {
 			px1 := x + w*float64(i-1)/float64(len(points)-1)
 			px2 := x + w*float64(i)/float64(len(points)-1)
-			d.pdf.SetDrawColor(58, 126, 131)
+			setDrawColor(d.pdf, d.palette.HealthState(points[i].State))
 			d.pdf.SetLineWidth(1.1)
 			d.pdf.Line(px1, chartY(y, h, points[i-1].State), px2, chartY(y, h, points[i].State))
 		}
@@ -263,7 +270,7 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	d.pdf.SetFont("plex", "", 7)
 	for _, index := range []int{0, len(points) - 1} {
 		px := x + w*float64(index)/float64(maxInt(1, len(points)-1))
-		d.pdf.SetTextColor(100, 110, 118)
+		setTextColor(d.pdf, d.palette.TextSecondary)
 		d.pdf.Text(px, y+h+5, formatDate(points[index].Date, d.tr.Locale))
 	}
 	d.pdf.SetY(y + h + 9)
@@ -400,8 +407,8 @@ func (d *document) summary(model *report.HiveReport) error {
 }
 
 func (d *document) tableHeader(values []string, widths []float64) {
-	d.pdf.SetFillColor(239, 244, 245)
-	d.pdf.SetTextColor(45, 65, 75)
+	setFillColor(d.pdf, d.palette.Card)
+	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 8)
 	for i, value := range values {
 		d.pdf.CellFormat(widths[i], 7, value, "", 0, "L", true, 0, "")
@@ -421,11 +428,15 @@ func (d *document) row(values []string, widths []float64, height float64) {
 }
 
 func (d *document) empty(value string) {
-	d.pdf.SetTextColor(105, 115, 122)
+	setTextColor(d.pdf, d.palette.TextSecondary)
 	d.pdf.SetFont("plex", "", 9)
 	d.pdf.MultiCell(contentW, 6, value, "", "L", false)
 	d.setBody()
 }
+
+func setTextColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetTextColor(color.R, color.G, color.B) }
+func setDrawColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetDrawColor(color.R, color.G, color.B) }
+func setFillColor(pdf *fpdf.Fpdf, color RGB) { pdf.SetFillColor(color.R, color.G, color.B) }
 
 func (c Catalog) Label(field string) string {
 	if value, ok := c.Text["assessment."+field]; ok {

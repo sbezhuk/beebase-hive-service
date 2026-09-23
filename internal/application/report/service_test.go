@@ -36,6 +36,7 @@ func TestServiceAssembleBuildsCompleteReportAndPreservesCanonicalData(t *testing
 		fakeEntitlement{value: apphive.EntitlementPro},
 		fakeInspections{value: inspection, started: inspectionCalled, release: released},
 		fakeHarvests{value: harvest, started: harvestCalled, release: released},
+		fakeApiaries{value: ApiaryDisplayInfo{ID: h.ApiaryID, Name: "Home Apiary"}},
 	)
 	service.now = func() time.Time { return date("2026-07-01") }
 
@@ -46,7 +47,7 @@ func TestServiceAssembleBuildsCompleteReportAndPreservesCanonicalData(t *testing
 	if got.Metadata.Locale != LocaleUK || !got.Metadata.GeneratedAt.Equal(date("2026-07-01")) {
 		t.Fatalf("metadata = %+v", got.Metadata)
 	}
-	if got.Hive.ID != hiveID || got.Hive.ApiaryID != h.ApiaryID || got.Hive.Name != h.Name {
+	if got.Hive.ID != hiveID || got.Hive.ApiaryID != h.ApiaryID || got.Hive.Name != h.Name || got.Hive.ApiaryName == nil || *got.Hive.ApiaryName != "Home Apiary" {
 		t.Fatalf("hive = %+v", got.Hive)
 	}
 	if got.Health.State != "GOOD" || got.HealthHistory.AlgorithmVersion != "v1" {
@@ -60,6 +61,17 @@ func TestServiceAssembleBuildsCompleteReportAndPreservesCanonicalData(t *testing
 	}
 	<-inspectionCalled
 	<-harvestCalled
+}
+
+func TestServiceAssembleNormalizesApiaryFailure(t *testing.T) {
+	service := NewService(
+		fakeHives{value: &apphive.WithAccess{Hive: testHive(uuid.New(), uuid.New())}}, fakeQueens{}, fakeEntitlement{value: apphive.EntitlementPro},
+		fakeInspections{}, fakeHarvests{}, fakeApiaries{err: errors.New("apiary unavailable")},
+	)
+	_, err := service.Assemble(context.Background(), uuid.New(), "access", uuid.New(), validPeriod(), LocaleEN)
+	if !errors.Is(err, ErrReportGenerationUnavailable) {
+		t.Fatalf("error = %v, want report_generation_unavailable", err)
+	}
 }
 
 func TestServiceAssembleRejectsFreeBeforeDependencies(t *testing.T) {
@@ -255,6 +267,17 @@ type fakeHarvests struct {
 	calls   *dependencyCalls
 	started chan struct{}
 	release chan struct{}
+}
+
+type fakeApiaries struct {
+	value      ApiaryDisplayInfo
+	err        error
+	calledWith uuid.UUID
+}
+
+func (f fakeApiaries) GetDisplayInfo(_ context.Context, id uuid.UUID) (ApiaryDisplayInfo, error) {
+	f.calledWith = id
+	return f.value, f.err
 }
 
 func (f fakeHarvests) GetReportData(_ context.Context, _ uuid.UUID, _, _ time.Time) (HarvestReportResponse, error) {
