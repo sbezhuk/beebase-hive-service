@@ -162,6 +162,40 @@ func TestTablePaginationKeepsHeaderWithFirstRow(t *testing.T) {
 	}
 }
 
+func TestSectionStartFitsKeepsMeasuredTableBlockTogether(t *testing.T) {
+	const (
+		gap         = sectionGapBefore
+		title       = sectionTitleHeight
+		contentGap  = sectionContentGap
+		header      = 8.0
+		firstRow    = 16.0
+		currentPage = pageHeight - 18 - gap - title - contentGap - header - firstRow
+	)
+	if !sectionStartFits(currentPage, header+firstRow, true) {
+		t.Fatal("exact section title and first table block boundary should fit")
+	}
+	if sectionStartFits(currentPage+0.01, header+firstRow, true) {
+		t.Fatal("section title should move when the measured first table block no longer fits")
+	}
+}
+
+func TestMeasureTableStartIncludesWrappedFirstRow(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddUTF8FontFromBytes("plex", "B", renderer.bold)
+	pdf.AddPage()
+	doc := &document{pdf: pdf, palette: beeBasePalette}
+	short := doc.measureTableStart([]string{"Date", "Type", "Assessment"}, inspectionTableWidths(), []string{"2026-09-01", "ROUTINE", "Short"}, rowLineH)
+	long := doc.measureTableStart([]string{"Date", "Type", "Assessment"}, inspectionTableWidths(), []string{"2026-09-01", "ROUTINE", strings.Repeat("Long assessment text ", 20)}, rowLineH)
+	if long <= short {
+		t.Fatalf("wrapped first row height = %v, short row height = %v; expected measured growth", long, short)
+	}
+}
+
 func TestDisplayCellValueUsesPlaceholderOnlyForMissingText(t *testing.T) {
 	for _, value := range []string{"", " ", "\t\n"} {
 		if got := displayCellValue(value); got != emptyCellPlaceholder {

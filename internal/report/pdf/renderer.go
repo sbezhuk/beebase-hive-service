@@ -224,8 +224,7 @@ func (d *document) section(title string, minimumContentHeight float64) error {
 	if d.sections > 0 {
 		gap = sectionGapBefore
 	}
-	reserve := gap + sectionTitleHeight + sectionContentGap + minimumContentHeight
-	if d.pdf.GetY()+reserve > pageHeight-18 {
+	if !sectionStartFits(d.pdf.GetY(), minimumContentHeight, d.sections > 0) {
 		d.pdf.AddPage()
 		gap = 0
 	}
@@ -253,7 +252,13 @@ func fullWidthDividerBounds() (left, right, width float64) {
 }
 
 func (d *document) health(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.colony_health"), 30); err != nil {
+	widths := healthTableWidths()
+	headers := []string{d.tr.T("report.health_dimension"), d.tr.T("report.state"), d.tr.T("report.coverage"), d.tr.T("report.health_evidence")}
+	minimumContentHeight := 12.0
+	if len(model.Health.Dimensions) > 0 {
+		minimumContentHeight += d.measureTableStart(headers, widths, d.healthRowValues(model.Health.Dimensions[0]), rowLineH)
+	}
+	if err := d.section(d.tr.T("report.colony_health"), minimumContentHeight); err != nil {
 		return err
 	}
 	d.pdf.SetFont("plex", "B", 10)
@@ -265,20 +270,28 @@ func (d *document) health(model *report.HiveReport) error {
 	d.pdf.CellFormat(35, 6, d.tr.T("report.coverage"), "", 0, "L", false, 0, "")
 	d.setBody()
 	d.pdf.CellFormat(45, 6, d.tr.Enum(model.Health.Coverage), "", 1, "L", false, 0, "")
-	d.tableHeader([]string{d.tr.T("report.health_dimension"), d.tr.T("report.state"), d.tr.T("report.coverage"), d.tr.T("report.health_evidence")}, healthTableWidths())
+	d.tableHeader(headers, widths)
 	for _, dimension := range model.Health.Dimensions {
-		evidence := make([]string, 0, len(dimension.Sources))
-		for _, source := range dimension.Sources {
-			evidence = append(evidence, formatDate(source.InspectedAt, d.tr.Locale))
-		}
-		d.row([]string{d.tr.Enum(dimension.Dimension), d.tr.Enum(dimension.State), d.tr.Enum(dimension.Coverage), strings.Join(evidence, ", ")}, healthTableWidths(), rowLineH)
+		d.row(d.healthRowValues(dimension), widths, rowLineH)
 	}
 	d.pdf.Ln(4)
 	return nil
 }
 
+func (d *document) healthRowValues(dimension report.HealthDimensionData) []string {
+	evidence := make([]string, 0, len(dimension.Sources))
+	for _, source := range dimension.Sources {
+		evidence = append(evidence, formatDate(source.InspectedAt, d.tr.Locale))
+	}
+	return []string{d.tr.Enum(dimension.Dimension), d.tr.Enum(dimension.State), d.tr.Enum(dimension.Coverage), strings.Join(evidence, ", ")}
+}
+
 func (d *document) history(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.health_history"), 63); err != nil {
+	minimumContentHeight := 63.0
+	if len(model.HealthHistory.Points) == 0 {
+		minimumContentHeight = d.measureEmptyState(d.tr.T("report.no_health_history"))
+	}
+	if err := d.section(d.tr.T("report.health_history"), minimumContentHeight); err != nil {
 		return err
 	}
 	if len(model.HealthHistory.Points) == 0 {
@@ -353,19 +366,28 @@ func chartY(y, h float64, state string) float64 {
 }
 
 func (d *document) inspections(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.inspections"), 18); err != nil {
+	widths := inspectionTableWidths()
+	headers := []string{d.tr.T("report.inspection_date"), d.tr.T("report.type"), d.tr.T("report.assessment")}
+	minimumContentHeight := d.measureEmptyState(d.tr.T("report.no_inspections"))
+	if len(model.Inspections) > 0 {
+		minimumContentHeight = d.measureTableStart(headers, widths, d.inspectionRowValues(model.Inspections[0]), rowLineH)
+	}
+	if err := d.section(d.tr.T("report.inspections"), minimumContentHeight); err != nil {
 		return err
 	}
 	if len(model.Inspections) == 0 {
 		d.empty(d.tr.T("report.no_inspections"))
 		return nil
 	}
-	d.tableHeader([]string{d.tr.T("report.inspection_date"), d.tr.T("report.type"), d.tr.T("report.assessment")}, inspectionTableWidths())
+	d.tableHeader(headers, widths)
 	for _, item := range model.Inspections {
-		assessment := d.assessment(item.Assessment)
-		d.row([]string{formatDate(item.InspectedAt, d.tr.Locale), d.tr.Enum(item.Type), assessment}, inspectionTableWidths(), rowLineH)
+		d.row(d.inspectionRowValues(item), widths, rowLineH)
 	}
 	return nil
+}
+
+func (d *document) inspectionRowValues(item report.InspectionData) []string {
+	return []string{formatDate(item.InspectedAt, d.tr.Locale), d.tr.Enum(item.Type), d.assessment(item.Assessment)}
 }
 
 func (d *document) assessment(value *report.AssessmentData) string {
@@ -418,44 +440,60 @@ func (d *document) assessment(value *report.AssessmentData) string {
 }
 
 func (d *document) queens(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.queen_history"), 18); err != nil {
+	widths := queenTableWidths()
+	headers := []string{d.tr.T("report.introduced"), d.tr.T("report.removed"), d.tr.T("report.year_color"), d.tr.T("report.current_queen"), d.tr.T("report.replacement_reason")}
+	minimumContentHeight := d.measureEmptyState(d.tr.T("report.no_queens"))
+	if len(model.Queens) > 0 {
+		minimumContentHeight = d.measureTableStart(headers, widths, d.queenRowValues(model.Queens[0]), rowLineH)
+	}
+	if err := d.section(d.tr.T("report.queen_history"), minimumContentHeight); err != nil {
 		return err
 	}
 	if len(model.Queens) == 0 {
 		d.empty(d.tr.T("report.no_queens"))
 		return nil
 	}
-	d.tableHeader([]string{d.tr.T("report.introduced"), d.tr.T("report.removed"), d.tr.T("report.year_color"), d.tr.T("report.current_queen"), d.tr.T("report.replacement_reason")}, queenTableWidths())
+	d.tableHeader(headers, widths)
 	for _, queen := range model.Queens {
-		removed := ""
-		if queen.RemovedAt != nil {
-			removed = formatTimeDate(*queen.RemovedAt, d.tr.Locale)
-		}
-		current := ""
-		if queen.Current {
-			current = d.tr.T("report.current_queen")
-		}
-		reason := ""
-		if queen.ReplacementReason != nil {
-			reason = d.tr.Enum(*queen.ReplacementReason)
-		}
-		color := d.tr.Enum(strings.ToUpper(queen.MarkingColor))
-		d.row([]string{formatTimeDate(queen.IntroducedAt, d.tr.Locale), removed, fmt.Sprintf("%d / %s", queen.Year, color), current, reason}, queenTableWidths(), rowLineH)
+		d.row(d.queenRowValues(queen), widths, rowLineH)
 	}
 	return nil
 }
 
+func (d *document) queenRowValues(queen report.QueenData) []string {
+	removed := ""
+	if queen.RemovedAt != nil {
+		removed = formatTimeDate(*queen.RemovedAt, d.tr.Locale)
+	}
+	current := ""
+	if queen.Current {
+		current = d.tr.T("report.current_queen")
+	}
+	reason := ""
+	if queen.ReplacementReason != nil {
+		reason = d.tr.Enum(*queen.ReplacementReason)
+	}
+	color := d.tr.Enum(strings.ToUpper(queen.MarkingColor))
+	return []string{formatTimeDate(queen.IntroducedAt, d.tr.Locale), removed, fmt.Sprintf("%d / %s", queen.Year, color), current, reason}
+}
+
 func (d *document) harvests(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.harvests"), 18); err != nil {
+	widths := harvestTableWidths()
+	headers := []string{d.tr.T("report.date"), d.tr.T("report.product"), d.tr.T("report.amount"), d.tr.T("report.unit")}
+	minimumContentHeight := d.measureEmptyState(d.tr.T("report.no_harvests"))
+	if len(model.Harvests) > 0 {
+		minimumContentHeight = d.measureTableStart(headers, widths, d.harvestRowValues(model.Harvests[0]), rowLineH)
+	}
+	if err := d.section(d.tr.T("report.harvests"), minimumContentHeight); err != nil {
 		return err
 	}
 	if len(model.Harvests) == 0 {
 		d.empty(d.tr.T("report.no_harvests"))
 		return nil
 	}
-	d.tableHeader([]string{d.tr.T("report.date"), d.tr.T("report.product"), d.tr.T("report.amount"), d.tr.T("report.unit")}, harvestTableWidths())
+	d.tableHeader(headers, widths)
 	for _, item := range model.Harvests {
-		d.row([]string{formatDate(item.HarvestedAt, d.tr.Locale), d.tr.Enum(item.Product), fmt.Sprintf("%.2f", item.Amount), d.tr.Enum(item.Unit)}, harvestTableWidths(), rowLineH)
+		d.row(d.harvestRowValues(item), widths, rowLineH)
 	}
 	d.endTable()
 	d.pdf.Ln(2)
@@ -468,8 +506,12 @@ func (d *document) harvests(model *report.HiveReport) error {
 	return nil
 }
 
+func (d *document) harvestRowValues(item report.HarvestData) []string {
+	return []string{formatDate(item.HarvestedAt, d.tr.Locale), d.tr.Enum(item.Product), fmt.Sprintf("%.2f", item.Amount), d.tr.Enum(item.Unit)}
+}
+
 func (d *document) summary(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.summary"), 24); err != nil {
+	if err := d.section(d.tr.T("report.summary"), 3*tableMinRowHeight); err != nil {
 		return err
 	}
 	d.summaryRow(d.tr.T("report.inspections"), strconv.Itoa(len(model.Inspections)))
@@ -534,6 +576,14 @@ func tableStartFits(currentY, headerHeight, firstRowHeight float64) bool {
 	return currentY+headerHeight+firstRowHeight <= pageHeight-18
 }
 
+func sectionStartFits(currentY, minimumContentHeight float64, hasPreviousSection bool) bool {
+	gap := 0.0
+	if hasPreviousSection {
+		gap = sectionGapBefore
+	}
+	return currentY+gap+sectionTitleHeight+sectionContentGap+minimumContentHeight <= pageHeight-18
+}
+
 func tableRowFits(currentY, rowHeight float64) bool {
 	return currentY+rowHeight <= pageHeight-18
 }
@@ -556,6 +606,20 @@ func (d *document) measureWrappedRow(values []string, widths []float64, lineHeig
 		}
 	}
 	return lines, rowHeight
+}
+
+func (d *document) measureTableStart(headers []string, widths []float64, firstRow []string, lineHeight float64) float64 {
+	d.pdf.SetFont("plex", "B", 8)
+	_, headerHeight := d.measureWrappedRow(headers, widths, 7, tableHeaderPaddingY, tableMinRowHeight)
+	d.setBody()
+	_, firstRowHeight := d.measureWrappedRow(firstRow, widths, lineHeight, tablePaddingY, tableMinRowHeight)
+	return headerHeight + firstRowHeight
+}
+
+func (d *document) measureEmptyState(value string) float64 {
+	d.setBody()
+	lines := d.pdf.SplitLines([]byte(value), contentW)
+	return maxFloat(6, float64(len(lines))*6)
 }
 
 func (d *document) drawWrappedRow(lines [][]string, widths []float64, lineHeight, verticalPadding, minHeight float64, header, separator bool, rowHeight float64) {
