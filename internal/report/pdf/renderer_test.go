@@ -143,6 +143,38 @@ func TestSectionSpacingIsCentralizedAndPaginationAware(t *testing.T) {
 	}
 }
 
+func TestTablePaginationKeepsHeaderWithFirstRow(t *testing.T) {
+	const (
+		headerHeight = 10.0
+		rowHeight    = 14.0
+	)
+	if !tableStartFits(250, headerHeight, rowHeight) {
+		t.Fatal("table should fit when header and first row fit together")
+	}
+	if tableStartFits(pageHeight-18-headerHeight, headerHeight, rowHeight) {
+		t.Fatal("table should move when only the header fits")
+	}
+	if !tableStartFits(pageHeight-18-headerHeight-rowHeight, headerHeight, rowHeight) {
+		t.Fatal("exact header plus first-row boundary should fit")
+	}
+	if tableRowFits(pageHeight-18-1, 2) {
+		t.Fatal("body row should move when it does not fit in the remaining space")
+	}
+}
+
+func TestDisplayCellValueUsesPlaceholderOnlyForMissingText(t *testing.T) {
+	for _, value := range []string{"", " ", "\t\n"} {
+		if got := displayCellValue(value); got != emptyCellPlaceholder {
+			t.Fatalf("displayCellValue(%q) = %q, want %q", value, got, emptyCellPlaceholder)
+		}
+	}
+	for _, value := range []string{"0", "0.00", "No", "None", "Unknown"} {
+		if got := displayCellValue(value); got != value {
+			t.Fatalf("displayCellValue(%q) = %q, want unchanged value", value, got)
+		}
+	}
+}
+
 func TestTablePaddingStaysInsideCellBounds(t *testing.T) {
 	if tablePaddingX < 2 || tablePaddingX > 3 || tablePaddingY < 1.5 || tablePaddingY > 2 {
 		t.Fatalf("unexpected table padding: horizontal=%v vertical=%v", tablePaddingX, tablePaddingY)

@@ -136,6 +136,18 @@ type document struct {
 	ctx      context.Context
 	palette  ReportPalette
 	sections int
+	table    *tableState
+}
+
+type tableState struct {
+	headers      []string
+	headerLines  [][]string
+	widths       []float64
+	lineHeight   float64
+	verticalPad  float64
+	minRowHeight float64
+	headerHeight float64
+	bodyRows     int
 }
 
 func (d *document) check() error {
@@ -415,7 +427,7 @@ func (d *document) queens(model *report.HiveReport) error {
 	}
 	d.tableHeader([]string{d.tr.T("report.introduced"), d.tr.T("report.removed"), d.tr.T("report.year_color"), d.tr.T("report.current_queen"), d.tr.T("report.replacement_reason")}, queenTableWidths())
 	for _, queen := range model.Queens {
-		removed := d.tr.T("report.no_replacement")
+		removed := ""
 		if queen.RemovedAt != nil {
 			removed = formatTimeDate(*queen.RemovedAt, d.tr.Locale)
 		}
@@ -423,7 +435,7 @@ func (d *document) queens(model *report.HiveReport) error {
 		if queen.Current {
 			current = d.tr.T("report.current_queen")
 		}
-		reason := d.tr.T("report.no_replacement")
+		reason := ""
 		if queen.ReplacementReason != nil {
 			reason = d.tr.Enum(*queen.ReplacementReason)
 		}
@@ -445,6 +457,7 @@ func (d *document) harvests(model *report.HiveReport) error {
 	for _, item := range model.Harvests {
 		d.row([]string{formatDate(item.HarvestedAt, d.tr.Locale), d.tr.Enum(item.Product), fmt.Sprintf("%.2f", item.Amount), d.tr.Enum(item.Unit)}, harvestTableWidths(), rowLineH)
 	}
+	d.endTable()
 	d.pdf.Ln(2)
 	d.pdf.SetFont("plex", "B", 10)
 	d.pdf.CellFormat(contentW, 6, d.tr.T("report.total"), "", 1, "L", false, 0, "")
@@ -473,15 +486,67 @@ func (d *document) summaryRow(label, value string) {
 func (d *document) tableHeader(values []string, widths []float64) {
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 8)
-	d.wrappedRow(values, widths, 7, tableHeaderPaddingY, tableMinRowHeight, true, false)
+	headerLines, headerHeight := d.measureWrappedRow(values, widths, 7, tableHeaderPaddingY, tableMinRowHeight)
+	d.table = &tableState{
+		headers:      append([]string(nil), values...),
+		headerLines:  headerLines,
+		widths:       append([]float64(nil), widths...),
+		lineHeight:   7,
+		verticalPad:  tableHeaderPaddingY,
+		minRowHeight: tableMinRowHeight,
+		headerHeight: headerHeight,
+	}
 	d.setBody()
 }
 
 func (d *document) row(values []string, widths []float64, height float64) {
+	if d.table != nil {
+		d.tableRow(values, widths, height)
+		return
+	}
 	d.wrappedRow(values, widths, height, tablePaddingY, tableMinRowHeight, false, true)
 }
 
+func (d *document) endTable() {
+	d.table = nil
+}
+
+func (d *document) tableRow(values []string, widths []float64, lineHeight float64) {
+	lines, rowHeight := d.measureWrappedRow(values, widths, lineHeight, tablePaddingY, tableMinRowHeight)
+	state := d.table
+	if state.bodyRows == 0 {
+		if !tableStartFits(d.pdf.GetY(), state.headerHeight, rowHeight) {
+			d.pdf.AddPage()
+		}
+		d.drawWrappedRow(state.headerLines, state.widths, state.lineHeight, state.verticalPad, state.minRowHeight, true, false, state.headerHeight)
+		d.drawWrappedRow(lines, widths, lineHeight, tablePaddingY, tableMinRowHeight, false, true, rowHeight)
+	} else {
+		if !tableRowFits(d.pdf.GetY(), rowHeight) {
+			d.pdf.AddPage()
+			d.drawWrappedRow(state.headerLines, state.widths, state.lineHeight, state.verticalPad, state.minRowHeight, true, false, state.headerHeight)
+		}
+		d.drawWrappedRow(lines, widths, lineHeight, tablePaddingY, tableMinRowHeight, false, true, rowHeight)
+	}
+	state.bodyRows++
+}
+
+func tableStartFits(currentY, headerHeight, firstRowHeight float64) bool {
+	return currentY+headerHeight+firstRowHeight <= pageHeight-18
+}
+
+func tableRowFits(currentY, rowHeight float64) bool {
+	return currentY+rowHeight <= pageHeight-18
+}
+
 func (d *document) wrappedRow(values []string, widths []float64, lineHeight, verticalPadding, minHeight float64, header, separator bool) {
+	lines, rowHeight := d.measureWrappedRow(values, widths, lineHeight, verticalPadding, minHeight)
+	if d.pdf.GetY()+rowHeight > pageHeight-18 {
+		d.pdf.AddPage()
+	}
+	d.drawWrappedRow(lines, widths, lineHeight, verticalPadding, minHeight, header, separator, rowHeight)
+}
+
+func (d *document) measureWrappedRow(values []string, widths []float64, lineHeight, verticalPadding, minHeight float64) ([][]string, float64) {
 	lines := make([][]string, len(values))
 	rowHeight := minHeight
 	for i, value := range values {
@@ -490,8 +555,15 @@ func (d *document) wrappedRow(values []string, widths []float64, lineHeight, ver
 			rowHeight = height
 		}
 	}
-	if d.pdf.GetY()+rowHeight > pageHeight-18 {
-		d.pdf.AddPage()
+	return lines, rowHeight
+}
+
+func (d *document) drawWrappedRow(lines [][]string, widths []float64, lineHeight, verticalPadding, minHeight float64, header, separator bool, rowHeight float64) {
+	if header {
+		setTextColor(d.pdf, d.palette.TextPrimary)
+		d.pdf.SetFont("plex", "B", 8)
+	} else {
+		d.setBody()
 	}
 	y := d.pdf.GetY()
 	x := contentLeft
@@ -544,6 +616,7 @@ func tableColumnBoundaries(widths []float64) []float64 {
 }
 
 func (d *document) wrapCell(value string, width float64) []string {
+	value = displayCellValue(value)
 	innerWidth := maxFloat(1, width-2*tablePaddingX)
 	lines := d.pdf.SplitLines([]byte(value), innerWidth)
 	if len(lines) == 0 {
@@ -554,6 +627,15 @@ func (d *document) wrapCell(value string, width float64) []string {
 		result[i] = string(line)
 	}
 	return result
+}
+
+const emptyCellPlaceholder = "--"
+
+func displayCellValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return emptyCellPlaceholder
+	}
+	return value
 }
 
 func (d *document) empty(value string) {
