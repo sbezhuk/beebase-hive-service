@@ -128,7 +128,6 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
-
     get:
       tags: [hives]
       summary: List the authenticated user's hives
@@ -235,6 +234,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+
         "401":
           description: Missing, invalid, or expired access token.
           content:
@@ -322,6 +322,76 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "404":
           description: No such hive, or it belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/hives/{hiveId}/report:
+    get:
+      tags: [hives]
+      summary: Generate a localized PDF report for a Hive
+      description: >
+        Generates the complete Hive Report for an authenticated user's Hive.
+        The report is available to Pro subscribers only. The period is
+        inclusive and may be at most twelve months. Apiary name is not
+        included because it is not owned by hive-service.
+      parameters:
+        - name: hiveId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: true
+          description: Inclusive start date in YYYY-MM-DD format.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          description: Inclusive end date in YYYY-MM-DD format, no more than twelve months after from.
+          schema: { type: string, format: date }
+        - name: locale
+          in: query
+          required: true
+          description: PDF presentation locale.
+          schema: { type: string, enum: [en, uk] }
+      responses:
+        "200":
+          description: The generated Hive Report PDF.
+          headers:
+            Content-Disposition:
+              description: Inline PDF filename.
+              schema: { type: string }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "400":
+          description: Invalid Hive ID, report dates, or locale.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationErrorResponse" }
+        "401":
+          description: Missing, invalid, or expired access token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: The caller's subscription is not Pro (resource_pro_locked).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: No such Hive, or it belongs to another user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: A required report-data dependency is temporarily unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: Report rendering failed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

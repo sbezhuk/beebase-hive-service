@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
+
+	appreport "github.com/sbezhuk/beebase-hive-service/internal/application/report"
 )
 
 const requestTimeout = 5 * time.Second
@@ -26,6 +29,52 @@ const requestTimeout = 5 * time.Second
 type Client struct {
 	baseURL string
 	http    *http.Client
+}
+
+// ReportClient reads the authenticated internal report-data contract owned by
+// inspection-service. It is separate from Client because report reads use the
+// service token rather than an end-user access token.
+type ReportClient struct {
+	baseURL string
+	token   string
+	http    *http.Client
+}
+
+func NewInternal(baseURL, internalToken string) *ReportClient {
+	return &ReportClient{
+		baseURL: baseURL,
+		token:   internalToken,
+		http:    &http.Client{Timeout: requestTimeout},
+	}
+}
+
+func (c *ReportClient) GetReportData(ctx context.Context, hiveID uuid.UUID, from, to time.Time) (appreport.InspectionReportResponse, error) {
+	query := url.Values{}
+	query.Set("from", from.Format("2006-01-02"))
+	query.Set("to", to.Format("2006-01-02"))
+	endpoint := fmt.Sprintf("%s/internal/api/v1/hives/%s/report-data?%s", c.baseURL, hiveID, query.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return appreport.InspectionReportResponse{}, fmt.Errorf("inspection report client: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return appreport.InspectionReportResponse{}, fmt.Errorf("inspection report client: call inspection-service: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return appreport.InspectionReportResponse{}, fmt.Errorf("inspection report client: unexpected status %d", resp.StatusCode)
+	}
+	var value appreport.InspectionReportResponse
+	if err := json.NewDecoder(resp.Body).Decode(&value); err != nil {
+		return appreport.InspectionReportResponse{}, fmt.Errorf("inspection report client: decode response: %w", err)
+	}
+	expectedFrom, expectedTo := from.Format("2006-01-02"), to.Format("2006-01-02")
+	if value.From != expectedFrom || value.To != expectedTo || value.HealthHistory.From != expectedFrom || value.HealthHistory.To != expectedTo {
+		return appreport.InspectionReportResponse{}, fmt.Errorf("inspection report client: response range does not match request")
+	}
+	return value, nil
 }
 
 // New returns a Client that calls inspection-service at baseURL (e.g.

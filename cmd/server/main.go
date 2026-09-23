@@ -13,6 +13,7 @@ import (
 
 	apphive "github.com/sbezhuk/beebase-hive-service/internal/application/hive"
 	appqueen "github.com/sbezhuk/beebase-hive-service/internal/application/queen"
+	appreport "github.com/sbezhuk/beebase-hive-service/internal/application/report"
 	"github.com/sbezhuk/beebase-hive-service/internal/config"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/apiaryclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/harvestclient"
@@ -21,6 +22,7 @@ import (
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/notificationclient"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/postgres"
 	"github.com/sbezhuk/beebase-hive-service/internal/platform/subscriptionclient"
+	reportpdf "github.com/sbezhuk/beebase-hive-service/internal/report/pdf"
 	repopostgres "github.com/sbezhuk/beebase-hive-service/internal/repository/postgres"
 	transporthttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http"
 	hivehttp "github.com/sbezhuk/beebase-hive-service/internal/transport/http/hive"
@@ -93,9 +95,21 @@ func run() error {
 	subscriptionClient := subscriptionclient.New(cfg.SubscriptionServiceURL)
 	notifications := notificationclient.New(cfg.NotificationServiceURL, cfg.InternalServiceToken)
 	hiveService := apphive.NewService(hiveRepo, apiaryVerifier, inspectionDeleter, inspectionDeleter, mediaDeleter, subscriptionClient, harvestDeleter, notifications, queenRepo)
-	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notifications)
 
 	queenService := appqueen.NewService(queenRepo, hiveRepo, apiaryVerifier, subscriptionClient)
+	reportRenderer, err := reportpdf.NewRenderer()
+	if err != nil {
+		return fmt.Errorf("build report renderer: %w", err)
+	}
+	reportService := appreport.NewService(
+		hiveService,
+		queenService,
+		subscriptionClient,
+		inspectionclient.NewInternal(cfg.InspectionServiceURL, cfg.InternalServiceToken),
+		harvestclient.NewInternal(cfg.HarvestServiceURL, cfg.InternalServiceToken),
+		apiaryclient.NewInternal(cfg.ApiaryServiceURL, cfg.InternalServiceToken),
+	)
+	hiveHandler := hivehttp.NewHandler(hiveService, log, cfg.PublicBaseURL, notifications, reportService, reportRenderer)
 	queenHandler := queenhttp.NewHandler(queenService, log)
 
 	router := transporthttp.NewRouter(log, db, hiveHandler, verifier, cfg.InternalServiceToken, queenHandler)

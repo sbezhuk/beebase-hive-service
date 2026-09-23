@@ -74,6 +74,7 @@ func NewRouter(
 			// "/{hiveID}" rather than under it, so it can never be
 			// confused with a hive id.
 			r.Get("/apiary-ids-with-hives", hiveHandler.ApiaryIDsWithHives)
+			r.Get("/{hiveId}/report", hiveHandler.Report)
 			r.Get("/{hiveId}", hiveHandler.Get)
 			r.Put("/{hiveId}", hiveHandler.Update)
 			r.Delete("/{hiveId}", hiveHandler.Delete)
