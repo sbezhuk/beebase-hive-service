@@ -30,6 +30,18 @@ func TestReportPaletteMirrorsMobileLightSemanticTokens(t *testing.T) {
 	}
 }
 
+func TestReportTableStyleUsesCanonicalBeeBaseSurfaces(t *testing.T) {
+	if reportTableStyle.headerBackground != beeBasePalette.Card {
+		t.Fatalf("header surface = %+v, want Card %+v", reportTableStyle.headerBackground, beeBasePalette.Card)
+	}
+	if reportTableStyle.bodyBackground != beeBasePalette.Background {
+		t.Fatalf("body surface = %+v, want Background %+v", reportTableStyle.bodyBackground, beeBasePalette.Background)
+	}
+	if reportTableStyle.border != beeBasePalette.Border || reportTableStyle.borderWidth <= 0 || reportTableStyle.borderWidth >= 0.7 {
+		t.Fatalf("internal table border = %+v width %v, want subtle Border", reportTableStyle.border, reportTableStyle.borderWidth)
+	}
+}
+
 func TestChartLabelXKeepsDateLabelsInsideSafeBounds(t *testing.T) {
 	const (
 		chartX = 15.0

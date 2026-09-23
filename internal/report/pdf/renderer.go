@@ -40,6 +40,20 @@ type Renderer struct {
 	bold    []byte
 }
 
+type tableStyle struct {
+	headerBackground RGB
+	bodyBackground   RGB
+	border           RGB
+	borderWidth      float64
+}
+
+var reportTableStyle = tableStyle{
+	headerBackground: beeBasePalette.Card,
+	bodyBackground:   beeBasePalette.Background,
+	border:           beeBasePalette.Border,
+	borderWidth:      0.25,
+}
+
 func NewRenderer() (*Renderer, error) {
 	regular, err := fontFiles.ReadFile("fonts/IBMPlexSans-Regular.ttf")
 	if err != nil {
@@ -439,12 +453,10 @@ func (d *document) summary(model *report.HiveReport) error {
 
 func (d *document) summaryRow(label, value string) {
 	const labelW = 100.0
-	d.wrappedRow([]string{label, value}, []float64{labelW, contentW - labelW}, rowLineH, tablePaddingY, tableMinRowHeight, false, false)
-	d.fullWidthDivider(d.pdf.GetY())
+	d.wrappedRow([]string{label, value}, []float64{labelW, contentW - labelW}, rowLineH, tablePaddingY, tableMinRowHeight, false, true)
 }
 
 func (d *document) tableHeader(values []string, widths []float64) {
-	setFillColor(d.pdf, d.palette.Card)
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 8)
 	d.wrappedRow(values, widths, 7, tableHeaderPaddingY, tableMinRowHeight, true, false)
@@ -455,7 +467,7 @@ func (d *document) row(values []string, widths []float64, height float64) {
 	d.wrappedRow(values, widths, height, tablePaddingY, tableMinRowHeight, false, true)
 }
 
-func (d *document) wrappedRow(values []string, widths []float64, lineHeight, verticalPadding, minHeight float64, fill, separator bool) {
+func (d *document) wrappedRow(values []string, widths []float64, lineHeight, verticalPadding, minHeight float64, header, separator bool) {
 	lines := make([][]string, len(values))
 	rowHeight := minHeight
 	for i, value := range values {
@@ -471,9 +483,12 @@ func (d *document) wrappedRow(values []string, widths []float64, lineHeight, ver
 	x := contentLeft
 	for i, cellLines := range lines {
 		width := widths[i]
-		if fill {
-			d.pdf.Rect(x, y, width, rowHeight, "F")
+		surface := reportTableStyle.bodyBackground
+		if header {
+			surface = reportTableStyle.headerBackground
 		}
+		setFillColor(d.pdf, surface)
+		d.pdf.Rect(x, y, width, rowHeight, "F")
 		contentHeight := float64(len(cellLines)) * lineHeight
 		textY := y + verticalPadding + (rowHeight-2*verticalPadding-contentHeight)/2
 		d.pdf.SetXY(x+tablePaddingX, textY)
@@ -482,6 +497,8 @@ func (d *document) wrappedRow(values []string, widths []float64, lineHeight, ver
 		x += width
 	}
 	if separator {
+		setDrawColor(d.pdf, reportTableStyle.border)
+		d.pdf.SetLineWidth(reportTableStyle.borderWidth)
 		d.pdf.Line(contentLeft, y+rowHeight, contentRight, y+rowHeight)
 	}
 	d.pdf.SetXY(contentLeft, y+rowHeight)
