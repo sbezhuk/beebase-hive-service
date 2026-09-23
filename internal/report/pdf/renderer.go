@@ -23,38 +23,39 @@ var fontFiles embed.FS
 var ErrRender = errors.New("report render failed")
 
 const (
-	pageWidth               = 210.0
-	pageHeight              = 297.0
-	margin                  = 15.0
-	contentLeft             = margin
-	contentRight            = pageWidth - margin
-	contentW                = contentRight - contentLeft
-	tablePaddingX           = 2.5
-	tablePaddingY           = 1.5
-	tableHeaderPaddingY     = 1.5
-	tableMinRowHeight       = 8.0
-	rowLineH                = 5.0
-	sectionGapBefore        = 7.0
-	sectionTitleHeight      = 8.0
-	sectionContentGap       = 4.0
-	contentBottom           = pageHeight - 18
-	fitEpsilon              = 0.0001
-	healthChartHeight       = 76.0
-	healthChartPlotHeight   = 52.0
-	healthChartPlotInset    = 4.0
-	healthChartDataInset    = 1.5
-	healthChartLabelPadding = 1.5
-	healthChartAxisGap      = 3.0
-	healthChartDateGap      = 5.0
-	healthChartLegendGap    = 7.0
-	healthChartLegendHeight = 6.0
-	totalBlockGap           = 2.0
-	totalLabelHeight        = 6.0
-	healthMetricGap         = 10.0
-	healthLabelLineH        = 4.0
-	healthValueLineH        = 6.0
-	healthExplanationGap    = 2.0
-	healthExplanationLineH  = 4.0
+	pageWidth                       = 210.0
+	pageHeight                      = 297.0
+	margin                          = 15.0
+	contentLeft                     = margin
+	contentRight                    = pageWidth - margin
+	contentW                        = contentRight - contentLeft
+	tablePaddingX                   = 2.5
+	tablePaddingY                   = 1.5
+	tableHeaderPaddingY             = 1.5
+	tableMinRowHeight               = 8.0
+	rowLineH                        = 5.0
+	sectionGapBefore                = 7.0
+	sectionTitleHeight              = 8.0
+	sectionContentGap               = 4.0
+	contentBottom                   = pageHeight - 18
+	fitEpsilon                      = 0.0001
+	healthChartHeight               = 76.0
+	healthChartPlotHeight           = 52.0
+	healthChartPlotInset            = 4.0
+	healthChartDataInset            = 1.5
+	healthChartLabelLeadingPadding  = 1.0
+	healthChartLabelTrailingPadding = 0.5
+	healthChartAxisGap              = 3.0
+	healthChartDateGap              = 5.0
+	healthChartLegendGap            = 7.0
+	healthChartLegendHeight         = 6.0
+	totalBlockGap                   = 2.0
+	totalLabelHeight                = 6.0
+	healthMetricGap                 = 10.0
+	healthLabelLineH                = 4.0
+	healthValueLineH                = 6.0
+	healthExplanationGap            = 2.0
+	healthExplanationLineH          = 4.0
 )
 
 type Renderer struct {
@@ -395,8 +396,9 @@ func (d *document) history(model *report.HiveReport) error {
 
 func (d *document) chart(points []report.HealthHistoryPointData) {
 	y := d.pdf.GetY()
-	chartX, _ := healthChartBounds()
-	dataX, dataW := healthChartPlotBounds(d)
+	geometry := d.healthChartGeometry()
+	dataX := geometry.plotLeft
+	dataW := geometry.plotRight - geometry.plotLeft
 	h := healthChartPlotHeight
 	maxIndex := len(points) - 1
 	xForIndex := func(index int) float64 {
@@ -434,7 +436,7 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 			chartY(y, h, "CONCERN")-chartY(y, h, "GOOD"),
 		)
 	}
-	d.renderHealthChartStateLabels(chartX, dataX, y, h)
+	d.renderHealthChartStateLabels(geometry, y, h)
 	d.pdf.SetFont("plex", "", 7)
 	spansMultipleYears := chartSpansMultipleYears(points)
 	for _, index := range healthChartDateIndices(len(points)) {
@@ -452,12 +454,33 @@ func healthChartBounds() (x, width float64) {
 	return contentLeft, contentW
 }
 
-func healthChartPlotBounds(d *document) (x, width float64) {
-	chartX, chartW := healthChartBounds()
+type healthChartGeometry struct {
+	chartLeft      float64
+	chartRight     float64
+	labelZoneLeft  float64
+	labelZoneRight float64
+	plotLeft       float64
+	plotRight      float64
+}
+
+func (d *document) healthChartGeometry() healthChartGeometry {
+	chartLeft, chartWidth := healthChartBounds()
 	labelZoneWidth := healthChartLabelZoneWidth(d)
-	plotLeft := chartX + labelZoneWidth + healthChartAxisGap + healthChartDataInset
-	plotRight := chartX + chartW - healthChartDataInset
-	return plotLeft, maxFloat(1, plotRight-plotLeft)
+	plotLeft := chartLeft + labelZoneWidth + healthChartAxisGap + healthChartDataInset
+	plotRight := chartLeft + chartWidth - healthChartDataInset
+	return healthChartGeometry{
+		chartLeft:      chartLeft,
+		chartRight:     chartLeft + chartWidth,
+		labelZoneLeft:  chartLeft,
+		labelZoneRight: plotLeft - healthChartAxisGap - healthChartDataInset,
+		plotLeft:       plotLeft,
+		plotRight:      plotRight,
+	}
+}
+
+func healthChartPlotBounds(d *document) (x, width float64) {
+	geometry := d.healthChartGeometry()
+	return geometry.plotLeft, maxFloat(1, geometry.plotRight-geometry.plotLeft)
 }
 
 func healthChartLabelZoneWidth(d *document) float64 {
@@ -466,13 +489,12 @@ func healthChartLabelZoneWidth(d *document) float64 {
 	for _, state := range knownHealthStates() {
 		maxWidth = maxFloat(maxWidth, d.pdf.GetStringWidth(d.tr.T(chartStateLabelKey(state))))
 	}
-	return maxWidth + 2*healthChartLabelPadding
+	return maxWidth + healthChartLabelLeadingPadding + healthChartLabelTrailingPadding
 }
 
-func (d *document) renderHealthChartStateLabels(chartX, plotLeft, y, h float64) {
-	labelZoneRight := plotLeft - healthChartAxisGap - healthChartDataInset
-	labelBoxX := chartX + healthChartLabelPadding
-	labelBoxWidth := labelZoneRight - labelBoxX - healthChartLabelPadding
+func (d *document) renderHealthChartStateLabels(geometry healthChartGeometry, y, h float64) {
+	labelBoxX := geometry.labelZoneLeft + healthChartLabelLeadingPadding
+	labelBoxWidth := geometry.labelZoneRight - labelBoxX - healthChartLabelTrailingPadding
 	for _, state := range knownHealthStates() {
 		yy := chartY(y, h, state)
 		label := d.tr.T(chartStateLabelKey(state))
@@ -480,7 +502,7 @@ func (d *document) renderHealthChartStateLabels(chartX, plotLeft, y, h float64) 
 		labelY := yy - 1.8
 		d.pdf.SetXY(labelBoxX, labelY)
 		setTextColor(d.pdf, d.palette.HealthState(state))
-		d.pdf.MultiCell(labelBoxWidth, 3.6, label, "", "R", false)
+		d.pdf.MultiCell(labelBoxWidth, 3.6, label, "", "L", false)
 	}
 }
 

@@ -293,6 +293,53 @@ func TestHealthChartUsesFullSectionWidthWithDedicatedLabelZone(t *testing.T) {
 	}
 }
 
+func TestHealthChartGeometryUsesSectionEdgeAndKeepsTemporalDataInPlot(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, locale := range []string{"en", "uk"} {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pdf := fpdf.New("P", "mm", "A4", "")
+		pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+		pdf.AddPage()
+		doc := &document{pdf: pdf, tr: catalog, palette: beeBasePalette}
+		geometry := doc.healthChartGeometry()
+		pdf.SetFont("plex", "", 7)
+		maxLabelWidth := 0.0
+		for _, state := range knownHealthStates() {
+			maxLabelWidth = maxFloat(maxLabelWidth, pdf.GetStringWidth(catalog.T(chartStateLabelKey(state))))
+		}
+		if geometry.chartLeft != contentLeft || geometry.labelZoneLeft != contentLeft {
+			t.Fatalf("%s left geometry = %+v, want section-aligned chart and label zone", locale, geometry)
+		}
+		if got, want := geometry.labelZoneRight-geometry.labelZoneLeft, maxLabelWidth+healthChartLabelLeadingPadding+healthChartLabelTrailingPadding; math.Abs(got-want) > fitEpsilon {
+			t.Fatalf("%s label zone width = %v, want measured width plus compact padding %v", locale, got, want)
+		}
+		if !(geometry.labelZoneLeft < geometry.labelZoneRight && geometry.labelZoneRight < geometry.plotLeft && geometry.plotLeft < geometry.plotRight) {
+			t.Fatalf("%s invalid horizontal geometry = %+v", locale, geometry)
+		}
+		if geometry.plotRight > geometry.chartRight {
+			t.Fatalf("%s plot right = %v exceeds chart right = %v", locale, geometry.plotRight, geometry.chartRight)
+		}
+		if healthChartAxisGap != geometry.plotLeft-geometry.labelZoneRight-healthChartDataInset {
+			t.Fatalf("%s axis gap drifted: geometry=%v constant=%v", locale, geometry.plotLeft-geometry.labelZoneRight-healthChartDataInset, healthChartAxisGap)
+		}
+		for _, run := range unknownHealthRuns([]report.HealthHistoryPointData{
+			{Date: "2026-01-01", State: "UNKNOWN"},
+			{Date: "2026-01-02", State: "GOOD"},
+		}) {
+			left, width := unknownChartBounds(run, 1, geometry.plotRight-geometry.plotLeft)
+			if geometry.plotLeft+left < geometry.plotLeft || geometry.plotLeft+left+width > geometry.plotRight {
+				t.Fatalf("%s UNKNOWN bounds escaped plot: left=%v width=%v geometry=%+v", locale, left, width, geometry)
+			}
+		}
+	}
+}
+
 func TestHealthChartUnknownFixturesRenderWithoutChangingHistoryData(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
