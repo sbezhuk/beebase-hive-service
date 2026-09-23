@@ -185,14 +185,14 @@ func TestHealthChartHasOnlyEvaluativeStatesOnAxis(t *testing.T) {
 	if isKnownHealthState("UNKNOWN") {
 		t.Fatal("UNKNOWN must not have a health-state chart coordinate")
 	}
-	if got := chartY(10, 60, "GOOD"); got != 10 {
-		t.Fatalf("GOOD chart Y = %v, want top rail 10", got)
+	if got := chartY(10, 60, "GOOD"); got != 14 {
+		t.Fatalf("GOOD chart Y = %v, want top rail 14", got)
 	}
 	if got := chartY(10, 60, "WATCH"); got != 40 {
 		t.Fatalf("WATCH chart Y = %v, want middle rail 40", got)
 	}
-	if got := chartY(10, 60, "CONCERN"); got != 70 {
-		t.Fatalf("CONCERN chart Y = %v, want bottom rail 70", got)
+	if got := chartY(10, 60, "CONCERN"); got != 66 {
+		t.Fatalf("CONCERN chart Y = %v, want bottom rail 66", got)
 	}
 	if got := chartY(10, 60, "UNKNOWN"); !math.IsNaN(got) {
 		t.Fatalf("UNKNOWN chart Y = %v, want no chart coordinate", got)
@@ -226,7 +226,7 @@ func TestHealthChartUnknownRunsUseIndependentHalfDayZones(t *testing.T) {
 }
 
 func TestHealthChartUnknownPresentationIsLocalizedAndNotRawEnum(t *testing.T) {
-	for locale, want := range map[string]string{"en": "Insufficient data", "uk": "Недостатньо даних"} {
+	for locale, want := range map[string]string{"en": "Not enough information", "uk": "Недостатньо інформації"} {
 		catalog, err := NewCatalog(locale)
 		if err != nil {
 			t.Fatal(err)
@@ -237,6 +237,60 @@ func TestHealthChartUnknownPresentationIsLocalizedAndNotRawEnum(t *testing.T) {
 		if got := catalog.T("report.insufficient_data"); got == "UNKNOWN" {
 			t.Fatalf("%s leaked raw UNKNOWN enum", locale)
 		}
+	}
+}
+
+func TestHealthChartUsesMobileStateLabelsAndNoInspectionLegend(t *testing.T) {
+	for locale, want := range map[string][3]string{
+		"en": {"Good", "Needs attention", "Concern"},
+		"uk": {"Добре", "Потребує уваги", "Є підстави для занепокоєння"},
+	} {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for index, state := range knownHealthStates() {
+			if got := catalog.T(chartStateLabelKey(state)); got != want[index] {
+				t.Fatalf("%s %s label = %q, want %q", locale, state, got, want[index])
+			}
+		}
+	}
+	if got := healthLegendStates(); len(got) != 3 || got[0] != "GOOD" || got[1] != "WATCH" || got[2] != "CONCERN" {
+		t.Fatalf("health legend states = %v, want exactly GOOD/WATCH/CONCERN", got)
+	}
+	if containsString(healthLegendStates(), "INSPECTION") {
+		t.Fatal("health legend must not contain inspection")
+	}
+}
+
+func TestHealthChartUsesMobileDateTickDensityAndShortLabels(t *testing.T) {
+	for points, wantStep := range map[int]int{1: 2, 14: 2, 15: 5, 30: 5, 31: 7, 60: 7, 61: 13, 365: 13} {
+		if got := healthChartDateStep(points); got != wantStep {
+			t.Fatalf("date step for %d points = %d, want %d", points, got, wantStep)
+		}
+	}
+	if got := formatChartDate("2026-08-02", "en", false); got != "02.08" {
+		t.Fatalf("short chart date = %q, want 02.08", got)
+	}
+	if got := formatChartDate("2026-08-02", "uk", false); got != "02.08" {
+		t.Fatalf("Ukrainian short chart date = %q, want 02.08", got)
+	}
+	if got := formatChartDate("2026-01-02", "en", true); got != "02.01.26" {
+		t.Fatalf("cross-year chart date = %q, want 02.01.26", got)
+	}
+}
+
+func TestHealthChartUsesFullSectionWidthWithMinimalDataInset(t *testing.T) {
+	chartX, chartW := healthChartBounds()
+	if chartX != contentLeft || chartW != contentW {
+		t.Fatalf("chart bounds = (%v, %v), want (%v, %v)", chartX, chartW, contentLeft, contentW)
+	}
+	dataX, dataW := healthChartDataBounds()
+	if dataX <= chartX || dataX+dataW >= chartX+chartW {
+		t.Fatalf("data bounds = (%v, %v), want minimal inset within chart bounds", dataX, dataW)
+	}
+	if healthChartDataInset <= 0 || healthChartDataInset > 2 {
+		t.Fatalf("data inset = %v, want small positive inset", healthChartDataInset)
 	}
 }
 
@@ -589,6 +643,31 @@ func TestRendererProducesUkrainianPDFAndEmptyStates(t *testing.T) {
 	}
 	if dir := os.Getenv("REPORT_SAMPLE_DIR"); dir != "" {
 		if err := os.WriteFile(filepath.Join(dir, "hive-report-uk.pdf"), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRendererProducesUkrainianHealthHistoryChart(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := sampleReport("uk", 0)
+	model.HealthHistory.Points = []report.HealthHistoryPointData{
+		{Date: "2026-08-02", State: "UNKNOWN"},
+		{Date: "2026-08-03", State: "GOOD"},
+		{Date: "2026-08-04", State: "GOOD"},
+		{Date: "2026-08-05", State: "WATCH"},
+		{Date: "2026-08-06", State: "CONCERN"},
+	}
+	content, err := renderer.Render(context.Background(), model)
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	assertPDF(t, content)
+	if dir := os.Getenv("REPORT_SAMPLE_DIR"); dir != "" {
+		if err := os.WriteFile(filepath.Join(dir, "hive-report-uk-chart.pdf"), content, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -23,30 +23,37 @@ var fontFiles embed.FS
 var ErrRender = errors.New("report render failed")
 
 const (
-	pageWidth              = 210.0
-	pageHeight             = 297.0
-	margin                 = 15.0
-	contentLeft            = margin
-	contentRight           = pageWidth - margin
-	contentW               = contentRight - contentLeft
-	tablePaddingX          = 2.5
-	tablePaddingY          = 1.5
-	tableHeaderPaddingY    = 1.5
-	tableMinRowHeight      = 8.0
-	rowLineH               = 5.0
-	sectionGapBefore       = 7.0
-	sectionTitleHeight     = 8.0
-	sectionContentGap      = 4.0
-	contentBottom          = pageHeight - 18
-	fitEpsilon             = 0.0001
-	healthChartHeight      = 63.0
-	totalBlockGap          = 2.0
-	totalLabelHeight       = 6.0
-	healthMetricGap        = 10.0
-	healthLabelLineH       = 4.0
-	healthValueLineH       = 6.0
-	healthExplanationGap   = 2.0
-	healthExplanationLineH = 4.0
+	pageWidth               = 210.0
+	pageHeight              = 297.0
+	margin                  = 15.0
+	contentLeft             = margin
+	contentRight            = pageWidth - margin
+	contentW                = contentRight - contentLeft
+	tablePaddingX           = 2.5
+	tablePaddingY           = 1.5
+	tableHeaderPaddingY     = 1.5
+	tableMinRowHeight       = 8.0
+	rowLineH                = 5.0
+	sectionGapBefore        = 7.0
+	sectionTitleHeight      = 8.0
+	sectionContentGap       = 4.0
+	contentBottom           = pageHeight - 18
+	fitEpsilon              = 0.0001
+	healthChartHeight       = 76.0
+	healthChartPlotHeight   = 52.0
+	healthChartPlotInset    = 4.0
+	healthChartDataInset    = 1.5
+	healthChartLabelInset   = 2.0
+	healthChartDateGap      = 5.0
+	healthChartLegendGap    = 7.0
+	healthChartLegendHeight = 6.0
+	totalBlockGap           = 2.0
+	totalLabelHeight        = 6.0
+	healthMetricGap         = 10.0
+	healthLabelLineH        = 4.0
+	healthValueLineH        = 6.0
+	healthExplanationGap    = 2.0
+	healthExplanationLineH  = 4.0
 )
 
 type Renderer struct {
@@ -386,32 +393,29 @@ func (d *document) history(model *report.HiveReport) error {
 }
 
 func (d *document) chart(points []report.HealthHistoryPointData) {
-	x, y, w, h := margin, d.pdf.GetY(), contentW, 54.0
+	y := d.pdf.GetY()
+	chartX, chartW := healthChartBounds()
+	dataX, dataW := healthChartDataBounds()
+	h := healthChartPlotHeight
 	maxIndex := len(points) - 1
 	xForIndex := func(index int) float64 {
-		return x + w*float64(index)/float64(maxInt(1, maxIndex))
+		return dataX + dataW*float64(index)/float64(maxInt(1, maxIndex))
 	}
 
 	// UNKNOWN has no health-state coordinate. Paint its calendar-day interval
 	// first, using the same half-slot expansion as the Flutter chart, so the
 	// neutral region—not a fabricated fourth severity—explains the gap.
 	for _, run := range unknownHealthRuns(points) {
-		left, width := unknownChartBounds(run, maxIndex, w)
+		left, width := unknownChartBounds(run, maxIndex, dataW)
 		setFillColor(d.pdf, d.palette.InsufficientDataZone())
-		d.pdf.Rect(x+left, y, width, h, "F")
+		d.pdf.Rect(dataX+left, chartY(y, h, "GOOD"), width, chartY(y, h, "CONCERN")-chartY(y, h, "GOOD"), "F")
 	}
 
 	setDrawColor(d.pdf, d.palette.Border)
 	d.pdf.SetLineWidth(0.25)
 	for _, state := range knownHealthStates() {
 		yy := chartY(y, h, state)
-		d.pdf.Line(x, yy, x+w, yy)
-	}
-	d.pdf.SetFont("plex", "", 7)
-	setTextColor(d.pdf, d.palette.TextSecondary)
-	for _, state := range []string{"GOOD", "WATCH", "CONCERN"} {
-		yy := chartY(y, h, state) - 1
-		d.pdf.Text(x, yy, d.tr.Enum(state))
+		d.pdf.Line(chartX, yy, chartX+chartW, yy)
 	}
 
 	// Known segments are rendered independently. A segment ends at UNKNOWN,
@@ -421,18 +425,156 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 		d.drawKnownHealthSegment(segment, xForIndex, y, h)
 	}
 	for _, run := range unknownHealthRuns(points) {
-		left, width := unknownChartBounds(run, maxIndex, w)
-		d.drawUnknownChartLabel(x+left, y, width, h)
+		left, width := unknownChartBounds(run, maxIndex, dataW)
+		d.drawUnknownChartLabel(
+			dataX+left,
+			chartY(y, h, "GOOD"),
+			width,
+			chartY(y, h, "CONCERN")-chartY(y, h, "GOOD"),
+		)
 	}
+	d.renderHealthChartStateLabels(chartX, chartW, y, h)
 	d.pdf.SetFont("plex", "", 7)
-	for _, index := range []int{0, len(points) - 1} {
-		px := x + w*float64(index)/float64(maxInt(1, len(points)-1))
-		label := formatDate(points[index].Date, d.tr.Locale)
-		labelX := chartLabelX(px, x, w, d.pdf.GetStringWidth(label))
+	spansMultipleYears := chartSpansMultipleYears(points)
+	for _, index := range healthChartDateIndices(len(points)) {
+		px := dataX + dataW*float64(index)/float64(maxInt(1, len(points)-1))
+		label := formatChartDate(points[index].Date, d.tr.Locale, spansMultipleYears)
+		labelX := chartLabelX(px, dataX, dataW, d.pdf.GetStringWidth(label))
 		setTextColor(d.pdf, d.palette.TextSecondary)
-		d.pdf.Text(labelX, y+h+5, label)
+		d.pdf.Text(labelX, y+h+healthChartDateGap, label)
 	}
-	d.pdf.SetY(y + h + 9)
+	d.renderHealthLegend(y + h + healthChartDateGap + healthChartLegendGap)
+	d.pdf.SetY(y + healthChartHeight)
+}
+
+func healthChartBounds() (x, width float64) {
+	return contentLeft, contentW
+}
+
+func healthChartDataBounds() (x, width float64) {
+	return contentLeft + healthChartDataInset, contentW - 2*healthChartDataInset
+}
+
+func (d *document) renderHealthChartStateLabels(x, width, y, h float64) {
+	const labelWidth = 38.0
+	for _, state := range knownHealthStates() {
+		yy := chartY(y, h, state)
+		label := d.tr.T(chartStateLabelKey(state))
+		maxWidth := minFloat(labelWidth, width-2*healthChartLabelInset)
+		lines := d.splitText(label, maxWidth, "plex", "", 7)
+		lineHeight := 3.6
+		labelHeight := float64(len(lines)) * lineHeight
+		labelX := x + healthChartLabelInset
+		labelY := yy - labelHeight/2
+		setFillColor(d.pdf, d.palette.Background)
+		d.pdf.Rect(labelX-1, labelY-0.7, maxWidth+2, labelHeight+1.4, "F")
+		d.pdf.SetXY(labelX, labelY)
+		setTextColor(d.pdf, d.palette.HealthState(state))
+		d.pdf.MultiCell(maxWidth, lineHeight, strings.Join(lines, "\n"), "", "L", false)
+	}
+}
+
+func healthLegendStates() []string { return knownHealthStates() }
+
+func chartStateLabelKey(state string) string {
+	switch state {
+	case "GOOD":
+		return "report.health_history_good"
+	case "WATCH":
+		return "report.health_history_watch"
+	case "CONCERN":
+		return "report.health_history_concern"
+	default:
+		return "report.insufficient_data"
+	}
+}
+
+func healthChartDateStep(pointCount int) int {
+	switch {
+	case pointCount <= 14:
+		return 2
+	case pointCount <= 30:
+		return 5
+	case pointCount <= 60:
+		return 7
+	default:
+		return 13
+	}
+}
+
+func healthChartDateIndices(pointCount int) []int {
+	if pointCount <= 0 {
+		return nil
+	}
+	last := pointCount - 1
+	step := healthChartDateStep(pointCount)
+	indices := make([]int, 0, pointCount/step+2)
+	for index := 0; index <= last; index += step {
+		indices = append(indices, index)
+	}
+	if indices[len(indices)-1] != last {
+		indices = append(indices, last)
+	}
+	return indices
+}
+
+func chartSpansMultipleYears(points []report.HealthHistoryPointData) bool {
+	if len(points) < 2 {
+		return false
+	}
+	first, firstErr := time.Parse("2006-01-02", points[0].Date)
+	last, lastErr := time.Parse("2006-01-02", points[len(points)-1].Date)
+	return firstErr == nil && lastErr == nil && first.Year() != last.Year()
+}
+
+func formatChartDate(value, locale string, includeYear bool) string {
+	date, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return value
+	}
+	if includeYear {
+		return fmt.Sprintf("%02d.%02d.%02d", date.Day(), int(date.Month()), date.Year()%100)
+	}
+	return fmt.Sprintf("%02d.%02d", date.Day(), int(date.Month()))
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *document) renderHealthLegend(y float64) {
+	states := healthLegendStates()
+	d.pdf.SetFont("plex", "", 7)
+	labelWidths := make([]float64, len(states))
+	total := 0.0
+	for index, state := range states {
+		label := d.tr.T(chartStateLabelKey(state))
+		labelWidths[index] = d.pdf.GetStringWidth(label)
+		total += 7 + labelWidths[index]
+		if index < len(states)-1 {
+			total += 7
+		}
+	}
+	x := contentLeft + (contentW-total)/2
+	for index, state := range states {
+		setDrawColor(d.pdf, d.palette.HealthState(state))
+		d.pdf.SetLineWidth(0.8)
+		d.pdf.SetLineCapStyle("butt")
+		d.pdf.Line(x, y+2.5, x+5, y+2.5)
+		x += 7
+		d.pdf.SetFont("plex", "", 7)
+		setTextColor(d.pdf, d.palette.TextSecondary)
+		d.pdf.Text(x, y+4.5, d.tr.T(chartStateLabelKey(state)))
+		x += labelWidths[index]
+		if index < len(states)-1 {
+			x += 7
+		}
+	}
 }
 
 type healthChartRun struct {
@@ -520,10 +662,8 @@ func (d *document) drawKnownHealthSegment(segment healthChartSegment, xForIndex 
 		setDrawColor(d.pdf, d.palette.HealthState(state))
 		d.pdf.SetLineWidth(1.1)
 		if endX > startX {
+			d.pdf.SetLineCapStyle("butt")
 			d.pdf.Line(startX, chartY(y, h, state), endX, chartY(y, h, state))
-		} else {
-			setFillColor(d.pdf, d.palette.HealthState(state))
-			d.pdf.Circle(startX, chartY(y, h, state), 1.7, "F")
 		}
 		if index < len(segment.points) {
 			nextState := segment.points[index].State
@@ -532,6 +672,7 @@ func (d *document) drawKnownHealthSegment(segment healthChartSegment, xForIndex 
 			x := xForIndex(segment.start + index)
 			d.pdf.Line(x, chartY(y, h, state), x, chartY(y, h, nextState))
 		}
+		d.pdf.SetLineCapStyle("butt")
 		runStart = index
 	}
 }
@@ -549,9 +690,7 @@ func (d *document) drawUnknownChartLabel(x, y, width, height float64) {
 	}
 	labelHeight := float64(len(labelLines)) * 4
 	labelX := x + horizontalPadding
-	// Place the annotation between the WATCH and CONCERN rails so it remains
-	// legible without masking the Y-axis labels or sitting directly on a guide.
-	labelY := y + (height-labelHeight)*0.65
+	labelY := y + (height-labelHeight)/2
 	d.pdf.SetXY(labelX, labelY)
 	setTextColor(d.pdf, d.palette.TextSecondary)
 	d.pdf.MultiCell(availableWidth, 4, strings.Join(labelLines, "\n"), "", "C", false)
@@ -580,7 +719,8 @@ func chartY(y, h float64, state string) float64 {
 	if !ok {
 		return math.NaN()
 	}
-	return y + h - rank*h/2
+	usableHeight := h - 2*healthChartPlotInset
+	return y + healthChartPlotInset + usableHeight - rank*usableHeight/2
 }
 
 func (d *document) inspections(model *report.HiveReport) error {
