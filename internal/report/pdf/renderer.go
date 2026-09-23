@@ -45,10 +45,14 @@ const (
 	healthChartDataInset            = 1.5
 	healthChartLabelLeadingPadding  = 1.0
 	healthChartLabelTrailingPadding = 0.5
-	healthChartAxisGap              = 3.0
+	healthChartAxisGap              = 2.0
 	healthChartDateGap              = 5.0
 	healthChartLegendGap            = 7.0
 	healthChartLegendHeight         = 6.0
+	healthLegendIndicatorWidth      = 5.0
+	healthLegendIndicatorGap        = 2.0
+	healthLegendItemGap             = 7.0
+	healthLegendIndicatorCenter     = 2.5
 	totalBlockGap                   = 2.0
 	totalLabelHeight                = 6.0
 	healthMetricGap                 = 10.0
@@ -400,6 +404,7 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	dataX := geometry.plotLeft
 	dataW := geometry.plotRight - geometry.plotLeft
 	h := healthChartPlotHeight
+	vertical := healthChartVerticalBounds(y, h)
 	maxIndex := len(points) - 1
 	xForIndex := func(index int) float64 {
 		return dataX + dataW*float64(index)/float64(maxInt(1, maxIndex))
@@ -411,13 +416,13 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	for _, run := range unknownHealthRuns(points) {
 		left, width := unknownChartBounds(run, maxIndex, dataW)
 		setFillColor(d.pdf, d.palette.InsufficientDataZone())
-		d.pdf.Rect(dataX+left, chartY(y, h, "GOOD"), width, chartY(y, h, "CONCERN")-chartY(y, h, "GOOD"), "F")
+		d.pdf.Rect(dataX+left, vertical.goodY, width, vertical.concernY-vertical.goodY, "F")
 	}
 
 	setDrawColor(d.pdf, d.palette.Border)
 	d.pdf.SetLineWidth(0.25)
 	for _, state := range knownHealthStates() {
-		yy := chartY(y, h, state)
+		yy := chartStateY(vertical, state)
 		d.pdf.Line(dataX, yy, dataX+dataW, yy)
 	}
 
@@ -425,15 +430,15 @@ func (d *document) chart(points []report.HealthHistoryPointData) {
 	// so no line or transition can imply a health trajectory through missing
 	// evidence. Within a segment, preserve the client's step-chart semantics.
 	for _, segment := range knownHealthSegments(points) {
-		d.drawKnownHealthSegment(segment, xForIndex, y, h)
+		d.drawKnownHealthSegment(segment, xForIndex, vertical)
 	}
 	for _, run := range unknownHealthRuns(points) {
 		left, width := unknownChartBounds(run, maxIndex, dataW)
 		d.drawUnknownChartLabel(
 			dataX+left,
-			chartY(y, h, "GOOD"),
+			vertical.goodY,
 			width,
-			chartY(y, h, "CONCERN")-chartY(y, h, "GOOD"),
+			vertical.concernY-vertical.goodY,
 		)
 	}
 	d.renderHealthChartStateLabels(geometry, y, h)
@@ -463,6 +468,14 @@ type healthChartGeometry struct {
 	plotRight      float64
 }
 
+type healthChartVerticalGeometry struct {
+	chartTop   float64
+	goodY      float64
+	watchY     float64
+	concernY   float64
+	plotBottom float64
+}
+
 func (d *document) healthChartGeometry() healthChartGeometry {
 	chartLeft, chartWidth := healthChartBounds()
 	labelZoneWidth := healthChartLabelZoneWidth(d)
@@ -475,6 +488,16 @@ func (d *document) healthChartGeometry() healthChartGeometry {
 		labelZoneRight: plotLeft - healthChartAxisGap - healthChartDataInset,
 		plotLeft:       plotLeft,
 		plotRight:      plotRight,
+	}
+}
+
+func healthChartVerticalBounds(chartTop, chartHeight float64) healthChartVerticalGeometry {
+	return healthChartVerticalGeometry{
+		chartTop:   chartTop,
+		goodY:      chartY(chartTop, chartHeight, "GOOD"),
+		watchY:     chartY(chartTop, chartHeight, "WATCH"),
+		concernY:   chartY(chartTop, chartHeight, "CONCERN"),
+		plotBottom: chartTop + chartHeight,
 	}
 }
 
@@ -493,17 +516,35 @@ func healthChartLabelZoneWidth(d *document) float64 {
 }
 
 func (d *document) renderHealthChartStateLabels(geometry healthChartGeometry, y, h float64) {
+	vertical := healthChartVerticalBounds(y, h)
 	labelBoxX := geometry.labelZoneLeft + healthChartLabelLeadingPadding
 	labelBoxWidth := geometry.labelZoneRight - labelBoxX - healthChartLabelTrailingPadding
 	for _, state := range knownHealthStates() {
-		yy := chartY(y, h, state)
+		yy := chartStateY(vertical, state)
 		label := d.tr.T(chartStateLabelKey(state))
 		d.pdf.SetFont("plex", "", 7)
-		labelY := yy - 1.8
+		labelY := healthChartLabelTopY(yy, 1)
 		d.pdf.SetXY(labelBoxX, labelY)
 		setTextColor(d.pdf, d.palette.HealthState(state))
 		d.pdf.MultiCell(labelBoxWidth, 3.6, label, "", "L", false)
 	}
+}
+
+func chartStateY(vertical healthChartVerticalGeometry, state string) float64 {
+	switch state {
+	case "GOOD":
+		return vertical.goodY
+	case "WATCH":
+		return vertical.watchY
+	case "CONCERN":
+		return vertical.concernY
+	default:
+		return math.NaN()
+	}
+}
+
+func healthChartLabelTopY(centerY float64, lineCount int) float64 {
+	return centerY - float64(maxInt(1, lineCount))*3.6/2
 }
 
 func healthLegendStates() []string { return knownHealthStates() }
@@ -587,26 +628,47 @@ func (d *document) renderHealthLegend(y float64) {
 	for index, state := range states {
 		label := d.tr.T(chartStateLabelKey(state))
 		labelWidths[index] = d.pdf.GetStringWidth(label)
-		total += 7 + labelWidths[index]
+		total += healthLegendItemWidth(healthLegendIndicatorWidth, healthLegendIndicatorGap, labelWidths[index])
 		if index < len(states)-1 {
-			total += 7
+			total += healthLegendItemGap
 		}
 	}
 	x := contentLeft + (contentW-total)/2
+	indicatorCenterY := y + healthLegendIndicatorCenter
+	textBaselineY := pdfTextBaselineForVisualCenter(d.pdf, indicatorCenterY)
 	for index, state := range states {
 		setDrawColor(d.pdf, d.palette.HealthState(state))
 		d.pdf.SetLineWidth(0.8)
 		d.pdf.SetLineCapStyle("butt")
-		d.pdf.Line(x, y+2.5, x+5, y+2.5)
-		x += 7
+		d.pdf.Line(x, indicatorCenterY, x+healthLegendIndicatorWidth, indicatorCenterY)
+		x += healthLegendIndicatorWidth + healthLegendIndicatorGap
 		d.pdf.SetFont("plex", "", 7)
 		setTextColor(d.pdf, d.palette.TextSecondary)
-		d.pdf.Text(x, y+4.5, d.tr.T(chartStateLabelKey(state)))
+		d.pdf.Text(x, textBaselineY, d.tr.T(chartStateLabelKey(state)))
 		x += labelWidths[index]
 		if index < len(states)-1 {
-			x += 7
+			x += healthLegendItemGap
 		}
 	}
+}
+
+func healthLegendItemWidth(indicatorWidth, indicatorGap, labelWidth float64) float64 {
+	return indicatorWidth + indicatorGap + labelWidth
+}
+
+// fpdf.Text uses a baseline Y coordinate. Convert between that baseline and
+// the visual center of the embedded font using its actual ascent/descent
+// metrics, rather than treating the nominal font size as glyph height.
+func pdfTextVisualCenterY(pdf *fpdf.Fpdf, baselineY float64) float64 {
+	_, unitSize := pdf.GetFontSize()
+	desc := pdf.GetFontDesc("", "")
+	return baselineY - float64(desc.Ascent+desc.Descent)*unitSize/2000
+}
+
+func pdfTextBaselineForVisualCenter(pdf *fpdf.Fpdf, centerY float64) float64 {
+	_, unitSize := pdf.GetFontSize()
+	desc := pdf.GetFontDesc("", "")
+	return centerY + float64(desc.Ascent+desc.Descent)*unitSize/2000
 }
 
 type healthChartRun struct {
@@ -679,7 +741,7 @@ func knownHealthSegments(points []report.HealthHistoryPointData) []healthChartSe
 	return segments
 }
 
-func (d *document) drawKnownHealthSegment(segment healthChartSegment, xForIndex func(int) float64, y, h float64) {
+func (d *document) drawKnownHealthSegment(segment healthChartSegment, xForIndex func(int) float64, vertical healthChartVerticalGeometry) {
 	runStart := 0
 	for index := 1; index <= len(segment.points); index++ {
 		if index < len(segment.points) && segment.points[index].State == segment.points[runStart].State {
@@ -695,14 +757,14 @@ func (d *document) drawKnownHealthSegment(segment healthChartSegment, xForIndex 
 		d.pdf.SetLineWidth(1.1)
 		if endX > startX {
 			d.pdf.SetLineCapStyle("butt")
-			d.pdf.Line(startX, chartY(y, h, state), endX, chartY(y, h, state))
+			d.pdf.Line(startX, chartStateY(vertical, state), endX, chartStateY(vertical, state))
 		}
 		if index < len(segment.points) {
 			nextState := segment.points[index].State
 			setDrawColor(d.pdf, d.palette.Border)
 			d.pdf.SetLineWidth(0.8)
 			x := xForIndex(segment.start + index)
-			d.pdf.Line(x, chartY(y, h, state), x, chartY(y, h, nextState))
+			d.pdf.Line(x, chartStateY(vertical, state), x, chartStateY(vertical, nextState))
 		}
 		d.pdf.SetLineCapStyle("butt")
 		runStart = index

@@ -199,6 +199,52 @@ func TestHealthChartHasOnlyEvaluativeStatesOnAxis(t *testing.T) {
 	}
 }
 
+func TestHealthChartLabelsShareCanonicalStateRows(t *testing.T) {
+	vertical := healthChartVerticalBounds(10, healthChartPlotHeight)
+	for _, state := range knownHealthStates() {
+		stateY := chartStateY(vertical, state)
+		labelCenter := healthChartLabelTopY(stateY, 1) + 3.6/2
+		if math.Abs(labelCenter-stateY) > fitEpsilon {
+			t.Fatalf("%s label center = %v, state Y = %v", state, labelCenter, stateY)
+		}
+	}
+	if vertical.goodY != chartY(vertical.chartTop, healthChartPlotHeight, "GOOD") ||
+		vertical.watchY != chartY(vertical.chartTop, healthChartPlotHeight, "WATCH") ||
+		vertical.concernY != chartY(vertical.chartTop, healthChartPlotHeight, "CONCERN") {
+		t.Fatalf("vertical geometry drifted from canonical chartY: %+v", vertical)
+	}
+}
+
+func TestHealthLegendItemsMeasureIndicatorAndTextAsOneUnit(t *testing.T) {
+	for _, labelWidth := range []float64{8, 20, 35} {
+		want := healthLegendIndicatorWidth + healthLegendIndicatorGap + labelWidth
+		if got := healthLegendItemWidth(healthLegendIndicatorWidth, healthLegendIndicatorGap, labelWidth); got != want {
+			t.Fatalf("legend item width = %v, want %v", got, want)
+		}
+	}
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, locale := range []string{"en", "uk"} {
+		if _, err := NewCatalog(locale); err != nil {
+			t.Fatal(err)
+		}
+		pdf := fpdf.New("P", "mm", "A4", "")
+		pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+		pdf.AddPage()
+		pdf.SetFont("plex", "", 7)
+		center := 100.0
+		baseline := pdfTextBaselineForVisualCenter(pdf, center)
+		if got := pdfTextVisualCenterY(pdf, baseline); math.Abs(got-center) > fitEpsilon {
+			t.Fatalf("%s legend text center = %v, want indicator center %v", locale, got, center)
+		}
+		if pdf.GetFontDesc("", "").Ascent == 0 {
+			t.Fatalf("%s embedded font metrics were unavailable", locale)
+		}
+	}
+}
+
 func TestHealthChartUnknownRunsUseIndependentHalfDayZones(t *testing.T) {
 	points := []report.HealthHistoryPointData{
 		{Date: "2026-01-01", State: "UNKNOWN"},
