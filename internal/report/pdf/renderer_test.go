@@ -179,6 +179,83 @@ func TestSectionStartFitsKeepsMeasuredTableBlockTogether(t *testing.T) {
 	}
 }
 
+func TestKeepWithNextMovesIntroducerWhenOnlyItFits(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddPage()
+	doc := &document{pdf: pdf, palette: beeBasePalette}
+
+	pdf.SetY(contentBottom - 16)
+	if moved := doc.ensureBlockStartFits(8, 0, 8); moved {
+		t.Fatal("block that fits exactly should remain on the current page")
+	}
+	if pdf.PageNo() != 1 {
+		t.Fatalf("page number = %d, want 1", pdf.PageNo())
+	}
+
+	pdf.SetY(contentBottom - 10)
+	if moved := doc.ensureBlockStartFits(8, 0, 8); !moved {
+		t.Fatal("introducer that fits without its child should move to the next page")
+	}
+	if pdf.PageNo() != 2 {
+		t.Fatalf("page number = %d, want 2", pdf.PageNo())
+	}
+}
+
+func TestKeepWithNextDoesNotLoopForOversizedChild(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddPage()
+	doc := &document{pdf: pdf, palette: beeBasePalette}
+
+	pdf.SetY(margin)
+	if moved := doc.ensureBlockStartFits(8, 0, contentBottom-margin+20); moved {
+		t.Fatal("oversized child on a fresh page must not trigger a second blank page")
+	}
+	if pdf.PageNo() != 1 {
+		t.Fatalf("page number = %d, want 1", pdf.PageNo())
+	}
+}
+
+func TestHarvestTotalKeepsLabelWithMeasuredFirstRow(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := NewCatalog("en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("plex", "", renderer.regular)
+	pdf.AddUTF8FontFromBytes("plex", "B", renderer.bold)
+	pdf.AddPage()
+	doc := &document{pdf: pdf, tr: tr, palette: beeBasePalette}
+	total := report.HarvestTotal{Product: "HONEY", Amount: 10, Unit: "kg"}
+	doc.setBody()
+	_, firstRowHeight := doc.measureWrappedRow(doc.harvestTotalRowValues(total), harvestTotalWidths(), rowLineH, tablePaddingY, tableMinRowHeight)
+	pdf.SetY(contentBottom - totalBlockGap - totalLabelHeight - 1)
+	if !blockStartFits(pdf.GetY(), totalBlockGap+totalLabelHeight, 0, firstRowHeight) {
+		// The label alone still fits, which is the regression condition.
+		if pdf.GetY()+totalBlockGap+totalLabelHeight > contentBottom+fitEpsilon {
+			t.Fatal("test setup does not leave room for the Total label")
+		}
+	} else {
+		t.Fatal("test setup unexpectedly fits the Total label and first row")
+	}
+	if moved := doc.ensureBlockStartFits(totalBlockGap+totalLabelHeight, 0, firstRowHeight); !moved {
+		t.Fatal("Total label should move with its first totals row")
+	}
+}
+
 func TestMeasureTableStartIncludesWrappedFirstRow(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {

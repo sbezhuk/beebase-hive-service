@@ -36,6 +36,12 @@ const (
 	sectionGapBefore    = 7.0
 	sectionTitleHeight  = 8.0
 	sectionContentGap   = 4.0
+	contentBottom       = pageHeight - 18
+	fitEpsilon          = 0.0001
+	healthSummaryHeight = 12.0
+	healthChartHeight   = 63.0
+	totalBlockGap       = 2.0
+	totalLabelHeight    = 6.0
 )
 
 type Renderer struct {
@@ -224,8 +230,7 @@ func (d *document) section(title string, minimumContentHeight float64) error {
 	if d.sections > 0 {
 		gap = sectionGapBefore
 	}
-	if !sectionStartFits(d.pdf.GetY(), minimumContentHeight, d.sections > 0) {
-		d.pdf.AddPage()
+	if d.ensureBlockStartFits(gap+sectionTitleHeight, sectionContentGap, minimumContentHeight) {
 		gap = 0
 	}
 	if gap > 0 {
@@ -254,7 +259,7 @@ func fullWidthDividerBounds() (left, right, width float64) {
 func (d *document) health(model *report.HiveReport) error {
 	widths := healthTableWidths()
 	headers := []string{d.tr.T("report.health_dimension"), d.tr.T("report.state"), d.tr.T("report.coverage"), d.tr.T("report.health_evidence")}
-	minimumContentHeight := 12.0
+	minimumContentHeight := healthSummaryHeight
 	if len(model.Health.Dimensions) > 0 {
 		minimumContentHeight += d.measureTableStart(headers, widths, d.healthRowValues(model.Health.Dimensions[0]), rowLineH)
 	}
@@ -287,7 +292,7 @@ func (d *document) healthRowValues(dimension report.HealthDimensionData) []strin
 }
 
 func (d *document) history(model *report.HiveReport) error {
-	minimumContentHeight := 63.0
+	minimumContentHeight := healthChartHeight
 	if len(model.HealthHistory.Points) == 0 {
 		minimumContentHeight = d.measureEmptyState(d.tr.T("report.no_health_history"))
 	}
@@ -496,18 +501,30 @@ func (d *document) harvests(model *report.HiveReport) error {
 		d.row(d.harvestRowValues(item), widths, rowLineH)
 	}
 	d.endTable()
-	d.pdf.Ln(2)
+	if len(model.HarvestTotals) == 0 {
+		return nil
+	}
+	totalWidths := harvestTotalWidths()
+	firstTotal := d.harvestTotalRowValues(model.HarvestTotals[0])
+	d.setBody()
+	_, firstTotalHeight := d.measureWrappedRow(firstTotal, totalWidths, rowLineH, tablePaddingY, tableMinRowHeight)
+	d.ensureBlockStartFits(totalBlockGap+totalLabelHeight, 0, firstTotalHeight)
+	d.pdf.Ln(totalBlockGap)
 	d.pdf.SetFont("plex", "B", 10)
-	d.pdf.CellFormat(contentW, 6, d.tr.T("report.total"), "", 1, "L", false, 0, "")
+	d.pdf.CellFormat(contentW, totalLabelHeight, d.tr.T("report.total"), "", 1, "L", false, 0, "")
 	d.setBody()
 	for _, total := range model.HarvestTotals {
-		d.row([]string{d.tr.Enum(total.Product), fmt.Sprintf("%.2f", total.Amount), d.tr.Enum(total.Unit)}, harvestTotalWidths(), rowLineH)
+		d.row(d.harvestTotalRowValues(total), totalWidths, rowLineH)
 	}
 	return nil
 }
 
 func (d *document) harvestRowValues(item report.HarvestData) []string {
 	return []string{formatDate(item.HarvestedAt, d.tr.Locale), d.tr.Enum(item.Product), fmt.Sprintf("%.2f", item.Amount), d.tr.Enum(item.Unit)}
+}
+
+func (d *document) harvestTotalRowValues(total report.HarvestTotal) []string {
+	return []string{d.tr.Enum(total.Product), fmt.Sprintf("%.2f", total.Amount), d.tr.Enum(total.Unit)}
 }
 
 func (d *document) summary(model *report.HiveReport) error {
@@ -557,14 +574,14 @@ func (d *document) tableRow(values []string, widths []float64, lineHeight float6
 	lines, rowHeight := d.measureWrappedRow(values, widths, lineHeight, tablePaddingY, tableMinRowHeight)
 	state := d.table
 	if state.bodyRows == 0 {
-		if !tableStartFits(d.pdf.GetY(), state.headerHeight, rowHeight) {
-			d.pdf.AddPage()
-		}
+		d.ensureBlockStartFits(state.headerHeight, 0, rowHeight)
 		d.drawWrappedRow(state.headerLines, state.widths, state.lineHeight, state.verticalPad, state.minRowHeight, true, false, state.headerHeight)
 		d.drawWrappedRow(lines, widths, lineHeight, tablePaddingY, tableMinRowHeight, false, true, rowHeight)
 	} else {
 		if !tableRowFits(d.pdf.GetY(), rowHeight) {
 			d.pdf.AddPage()
+			// The repeated header is an introducer for the continuation row.
+			d.ensureBlockStartFits(state.headerHeight, 0, rowHeight)
 			d.drawWrappedRow(state.headerLines, state.widths, state.lineHeight, state.verticalPad, state.minRowHeight, true, false, state.headerHeight)
 		}
 		d.drawWrappedRow(lines, widths, lineHeight, tablePaddingY, tableMinRowHeight, false, true, rowHeight)
@@ -573,7 +590,7 @@ func (d *document) tableRow(values []string, widths []float64, lineHeight float6
 }
 
 func tableStartFits(currentY, headerHeight, firstRowHeight float64) bool {
-	return currentY+headerHeight+firstRowHeight <= pageHeight-18
+	return blockStartFits(currentY, headerHeight, 0, firstRowHeight)
 }
 
 func sectionStartFits(currentY, minimumContentHeight float64, hasPreviousSection bool) bool {
@@ -581,18 +598,38 @@ func sectionStartFits(currentY, minimumContentHeight float64, hasPreviousSection
 	if hasPreviousSection {
 		gap = sectionGapBefore
 	}
-	return currentY+gap+sectionTitleHeight+sectionContentGap+minimumContentHeight <= pageHeight-18
+	return blockStartFits(currentY, gap+sectionTitleHeight, sectionContentGap, minimumContentHeight)
 }
 
 func tableRowFits(currentY, rowHeight float64) bool {
-	return currentY+rowHeight <= pageHeight-18
+	return blockStartFits(currentY, 0, 0, rowHeight)
+}
+
+// blockStartFits reports whether an introducer and its minimum following content
+// fit in the canonical printable area. The >= boundary is intentionally treated
+// as fitting so exact page boundaries do not create avoidable blank space.
+func blockStartFits(currentY, introducerHeight, gapAfterIntroducer, followingHeight float64) bool {
+	return currentY+introducerHeight+gapAfterIntroducer+followingHeight <= contentBottom+fitEpsilon
+}
+
+// ensureBlockStartFits applies the keep-with-next rule. It moves the block to a
+// fresh page only when the block does not fit and the current page is not already
+// fresh. An oversized child is rendered on the fresh page without retrying, so
+// pagination cannot loop or create repeated blank pages.
+func (d *document) ensureBlockStartFits(introducerHeight, gapAfterIntroducer, followingHeight float64) bool {
+	if blockStartFits(d.pdf.GetY(), introducerHeight, gapAfterIntroducer, followingHeight) {
+		return false
+	}
+	if d.pdf.GetY() > margin+fitEpsilon {
+		d.pdf.AddPage()
+		return true
+	}
+	return false
 }
 
 func (d *document) wrappedRow(values []string, widths []float64, lineHeight, verticalPadding, minHeight float64, header, separator bool) {
 	lines, rowHeight := d.measureWrappedRow(values, widths, lineHeight, verticalPadding, minHeight)
-	if d.pdf.GetY()+rowHeight > pageHeight-18 {
-		d.pdf.AddPage()
-	}
+	d.ensureBlockStartFits(0, 0, rowHeight)
 	d.drawWrappedRow(lines, widths, lineHeight, verticalPadding, minHeight, header, separator, rowHeight)
 }
 
