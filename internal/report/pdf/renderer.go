@@ -335,8 +335,8 @@ func (d *document) healthSummaryLayout(model *report.HiveReport) healthSummaryLa
 			d.splitText(d.tr.T("report.data_coverage"), width, "plex", "", 8),
 		},
 		values: [2][]string{
-			d.splitText(d.tr.Enum(model.Health.State), width, "plex", "B", 11),
-			d.splitText(d.tr.Enum(model.Health.Coverage), width, "plex", "B", 11),
+			d.splitText(d.tr.HealthState(model.Health.State), width, "plex", "B", 11),
+			d.splitText(d.tr.HealthCoverage(model.Health.Coverage), width, "plex", "B", 11),
 		},
 		explanation: d.splitText(d.tr.T("report.data_coverage_explanation"), contentW, "plex", "", 8),
 	}
@@ -388,13 +388,13 @@ func healthSummaryValueColor(palette ReportPalette, overall bool, value string) 
 
 func (d *document) splitText(value string, width float64, family, style string, size float64) []string {
 	d.pdf.SetFont(family, style, size)
-	lines := d.pdf.SplitLines([]byte(value), width)
+	lines := d.pdf.SplitText(value, width)
 	if len(lines) == 0 {
 		return []string{""}
 	}
 	result := make([]string, len(lines))
 	for index, line := range lines {
-		result[index] = string(line)
+		result[index] = line
 	}
 	return result
 }
@@ -404,7 +404,7 @@ func (d *document) healthRowValues(dimension report.HealthDimensionData) []strin
 	for _, source := range dimension.Sources {
 		evidence = append(evidence, formatDate(source.InspectedAt, d.tr.Locale))
 	}
-	return []string{d.tr.Enum(dimension.Dimension), d.tr.Enum(dimension.State), d.tr.Enum(dimension.Coverage), strings.Join(evidence, ", ")}
+	return []string{d.tr.HealthDimension(dimension.Dimension), d.tr.HealthState(dimension.State), d.tr.HealthCoverage(dimension.Coverage), strings.Join(evidence, ", ")}
 }
 
 func (d *document) history(model *report.HiveReport) error {
@@ -536,7 +536,7 @@ func healthChartLabelZoneWidth(d *document) float64 {
 	d.pdf.SetFont("plex", "", 7)
 	maxWidth := 0.0
 	for _, state := range knownHealthStates() {
-		maxWidth = maxFloat(maxWidth, d.pdf.GetStringWidth(d.tr.T(chartStateLabelKey(state))))
+		maxWidth = maxFloat(maxWidth, d.pdf.GetStringWidth(d.tr.HealthState(state)))
 	}
 	return maxWidth + healthChartLabelLeadingPadding + healthChartLabelTrailingPadding
 }
@@ -547,7 +547,7 @@ func (d *document) renderHealthChartStateLabels(geometry healthChartGeometry, y,
 	labelBoxWidth := geometry.labelZoneRight - labelBoxX - healthChartLabelTrailingPadding
 	for _, state := range knownHealthStates() {
 		yy := chartStateY(vertical, state)
-		label := d.tr.T(chartStateLabelKey(state))
+		label := d.tr.HealthState(state)
 		d.pdf.SetFont("plex", "", 7)
 		labelY := healthChartLabelTopY(yy, 1)
 		d.pdf.SetXY(labelBoxX, labelY)
@@ -574,19 +574,6 @@ func healthChartLabelTopY(centerY float64, lineCount int) float64 {
 }
 
 func healthLegendStates() []string { return knownHealthStates() }
-
-func chartStateLabelKey(state string) string {
-	switch state {
-	case "GOOD":
-		return "report.health_history_good"
-	case "WATCH":
-		return "report.health_history_watch"
-	case "CONCERN":
-		return "report.health_history_concern"
-	default:
-		return "report.insufficient_data"
-	}
-}
 
 func healthChartDateStep(pointCount int) int {
 	switch {
@@ -652,7 +639,7 @@ func (d *document) renderHealthLegend(y float64) {
 	labelWidths := make([]float64, len(states))
 	total := 0.0
 	for index, state := range states {
-		label := d.tr.T(chartStateLabelKey(state))
+		label := d.tr.HealthState(state)
 		labelWidths[index] = d.pdf.GetStringWidth(label)
 		total += healthLegendItemWidth(healthLegendIndicatorWidth, healthLegendIndicatorGap, labelWidths[index])
 		if index < len(states)-1 {
@@ -670,7 +657,7 @@ func (d *document) renderHealthLegend(y float64) {
 		x += healthLegendIndicatorWidth + healthLegendIndicatorGap
 		d.pdf.SetFont("plex", "", 7)
 		setTextColor(d.pdf, d.palette.TextSecondary)
-		d.pdf.Text(x, textBaselineY, d.tr.T(chartStateLabelKey(state)))
+		d.pdf.Text(x, textBaselineY, d.tr.HealthState(state))
 		x += labelWidths[index]
 		if index < len(states)-1 {
 			x += healthLegendItemGap
@@ -804,7 +791,7 @@ func (d *document) drawUnknownChartLabel(x, y, width, height float64) {
 		return
 	}
 	d.pdf.SetFont("plex", "", 7)
-	labelLines := d.splitText(d.tr.T("report.insufficient_data"), availableWidth, "plex", "", 7)
+	labelLines := d.splitText(d.tr.HealthState("UNKNOWN"), availableWidth, "plex", "", 7)
 	if len(labelLines) > 2 {
 		return
 	}

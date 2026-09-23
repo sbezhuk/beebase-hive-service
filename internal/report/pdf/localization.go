@@ -40,6 +40,21 @@ var baseEnums = map[string]string{
 	"AGING_AND_WEAR": "Aging and wear", "LOW_EGG_LAYING": "Low egg laying", "INJURY_OR_MUTILATION": "Injury or mutilation", "DISEASE_OR_POOR_QUALITY": "Disease or poor quality", "NATURAL_SUPERSEDURE": "Natural supersedure", "BREED_CHANGE_OR_AGGRESSIVENESS": "Breed change or aggressiveness", "BLUE": "Blue", "WHITE": "White", "YELLOW": "Yellow", "RED": "Red", "GREEN": "Green",
 }
 
+var healthStateLabels = map[string]map[string]string{
+	"en": {"UNKNOWN": "Not enough information", "GOOD": "Good", "WATCH": "Needs attention", "CONCERN": "Concern"},
+	"uk": {"UNKNOWN": "Недостатньо інформації", "GOOD": "Добре", "WATCH": "Потребує уваги", "CONCERN": "Є підстави для занепокоєння"},
+}
+
+var healthCoverageLabels = map[string]map[string]string{
+	"en": {"NONE": "None", "LOW": "Low", "MEDIUM": "Medium", "HIGH": "High"},
+	"uk": {"NONE": "Немає", "LOW": "Низький", "MEDIUM": "Помірний", "HIGH": "Високий"},
+}
+
+var healthDimensionLabels = map[string]map[string]string{
+	"en": {"STRENGTH": "Strength", "QUEEN": "Queen", "BROOD": "Brood", "NUTRITION": "Nutrition", "PESTS_AND_DISEASE": "Pests & Disease", "OVERALL": "Beekeeper overall assessment"},
+	"uk": {"STRENGTH": "Сила сім'ї", "QUEEN": "Матка", "BROOD": "Розплід", "NUTRITION": "Харчування", "PESTS_AND_DISEASE": "Шкідники та хвороби", "OVERALL": "Загальна оцінка пасічника"},
+}
+
 var enText = map[string]string{
 	"report.title": "Hive Report", "report.period": "Report period", "report.generated_at": "Generated",
 	"report.colony_health": "Colony Health", "report.health_history": "Health History", "report.inspections": "Inspections", "report.queen_history": "Queen History", "report.harvests": "Harvests", "report.summary": "Summary",
@@ -81,6 +96,27 @@ func (c Catalog) Enum(value string) string {
 		return translated
 	}
 	return humanize(value)
+}
+
+func (c Catalog) HealthState(value string) string {
+	if translated, ok := healthStateLabels[c.Locale][value]; ok {
+		return translated
+	}
+	return c.Enum(value)
+}
+
+func (c Catalog) HealthCoverage(value string) string {
+	if translated, ok := healthCoverageLabels[c.Locale][value]; ok {
+		return translated
+	}
+	return c.Enum(value)
+}
+
+func (c Catalog) HealthDimension(value string) string {
+	if translated, ok := healthDimensionLabels[c.Locale][value]; ok {
+		return translated
+	}
+	return c.Enum(value)
 }
 
 func enumTranslations(locale string) map[string]string {

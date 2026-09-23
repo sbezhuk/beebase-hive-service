@@ -67,7 +67,7 @@ func TestHealthSummaryUsesClearLocalizedMetricsAndNeutralCoverage(t *testing.T) 
 		if strings.Join(layout.explanation, " ") != catalog.T("report.data_coverage_explanation") {
 			t.Fatalf("%s coverage explanation = %q", locale, strings.Join(layout.explanation, " "))
 		}
-		if strings.Join(layout.values[0], " ") != catalog.Enum("UNKNOWN") || strings.Join(layout.values[1], " ") != catalog.Enum("NONE") {
+		if strings.Join(layout.values[0], " ") != catalog.HealthState("UNKNOWN") || strings.Join(layout.values[1], " ") != catalog.HealthCoverage("NONE") {
 			t.Fatalf("%s explicit states were not localized: overall=%q coverage=%q", locale, layout.values[0], layout.values[1])
 		}
 		if got := healthSummaryValueColor(beeBasePalette, true, "UNKNOWN"); got != beeBasePalette.Unknown {
@@ -296,7 +296,7 @@ func TestHealthChartUsesMobileStateLabelsAndNoInspectionLegend(t *testing.T) {
 			t.Fatal(err)
 		}
 		for index, state := range knownHealthStates() {
-			if got := catalog.T(chartStateLabelKey(state)); got != want[index] {
+			if got := catalog.HealthState(state); got != want[index] {
 				t.Fatalf("%s %s label = %q, want %q", locale, state, got, want[index])
 			}
 		}
@@ -306,6 +306,61 @@ func TestHealthChartUsesMobileStateLabelsAndNoInspectionLegend(t *testing.T) {
 	}
 	if containsString(healthLegendStates(), "INSPECTION") {
 		t.Fatal("health legend must not contain inspection")
+	}
+}
+
+func TestColonyHealthTerminologyMatchesMobileMappings(t *testing.T) {
+	states := map[string]map[string]string{
+		"en": {"UNKNOWN": "Not enough information", "GOOD": "Good", "WATCH": "Needs attention", "CONCERN": "Concern"},
+		"uk": {"UNKNOWN": "Недостатньо інформації", "GOOD": "Добре", "WATCH": "Потребує уваги", "CONCERN": "Є підстави для занепокоєння"},
+	}
+	coverage := map[string]map[string]string{
+		"en": {"NONE": "None", "LOW": "Low", "MEDIUM": "Medium", "HIGH": "High"},
+		"uk": {"NONE": "Немає", "LOW": "Низький", "MEDIUM": "Помірний", "HIGH": "Високий"},
+	}
+	dimensions := map[string]map[string]string{
+		"en": {"STRENGTH": "Strength", "QUEEN": "Queen", "BROOD": "Brood", "NUTRITION": "Nutrition", "PESTS_AND_DISEASE": "Pests & Disease", "OVERALL": "Beekeeper overall assessment"},
+		"uk": {"STRENGTH": "Сила сім'ї", "QUEEN": "Матка", "BROOD": "Розплід", "NUTRITION": "Харчування", "PESTS_AND_DISEASE": "Шкідники та хвороби", "OVERALL": "Загальна оцінка пасічника"},
+	}
+	for locale := range states {
+		catalog, err := NewCatalog(locale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for value, want := range states[locale] {
+			if got := catalog.HealthState(value); got != want || got == value {
+				t.Fatalf("%s state %s = %q, want %q", locale, value, got, want)
+			}
+		}
+		for value, want := range coverage[locale] {
+			if got := catalog.HealthCoverage(value); got != want || got == value {
+				t.Fatalf("%s coverage %s = %q, want %q", locale, value, got, want)
+			}
+		}
+		for value, want := range dimensions[locale] {
+			if got := catalog.HealthDimension(value); got != want || got == value {
+				t.Fatalf("%s dimension %s = %q, want %q", locale, value, got, want)
+			}
+		}
+	}
+}
+
+func TestRepresentativeColonyHealthStatesRenderInBothLocales(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, locale := range []string{"en", "uk"} {
+		for _, values := range [][2]string{{"GOOD", "HIGH"}, {"WATCH", "MEDIUM"}, {"CONCERN", "LOW"}, {"UNKNOWN", "NONE"}} {
+			model := sampleReport(locale, 0)
+			model.Health.State = values[0]
+			model.Health.Coverage = values[1]
+			content, err := renderer.Render(context.Background(), model)
+			if err != nil {
+				t.Fatalf("%s %s/%s Render() error = %v", locale, values[0], values[1], err)
+			}
+			assertPDF(t, content)
+		}
 	}
 }
 
@@ -357,7 +412,7 @@ func TestHealthChartGeometryUsesSectionEdgeAndKeepsTemporalDataInPlot(t *testing
 		pdf.SetFont("plex", "", 7)
 		maxLabelWidth := 0.0
 		for _, state := range knownHealthStates() {
-			maxLabelWidth = maxFloat(maxLabelWidth, pdf.GetStringWidth(catalog.T(chartStateLabelKey(state))))
+			maxLabelWidth = maxFloat(maxLabelWidth, pdf.GetStringWidth(catalog.HealthState(state)))
 		}
 		if geometry.chartLeft != contentLeft || geometry.labelZoneLeft != contentLeft {
 			t.Fatalf("%s left geometry = %+v, want section-aligned chart and label zone", locale, geometry)
