@@ -109,6 +109,40 @@ func TestReportTablesUseSafeContentWidth(t *testing.T) {
 	}
 }
 
+func TestTableColumnBoundariesUseCanonicalWidths(t *testing.T) {
+	for name, widths := range map[string][]float64{
+		"health":     healthTableWidths(),
+		"inspection": inspectionTableWidths(),
+		"queen":      queenTableWidths(),
+		"harvest":    harvestTableWidths(),
+		"summary":    []float64{100, contentW - 100},
+	} {
+		boundaries := tableColumnBoundaries(widths)
+		if len(boundaries) != len(widths)-1 {
+			t.Fatalf("%s boundaries = %d, want %d", name, len(boundaries), len(widths)-1)
+		}
+		previous := contentLeft
+		for _, boundary := range boundaries {
+			if boundary <= previous || boundary >= contentRight {
+				t.Fatalf("%s boundary %v is outside table bounds (%v, %v)", name, boundary, contentLeft, contentRight)
+			}
+			previous = boundary
+		}
+	}
+}
+
+func TestSectionSpacingIsCentralizedAndPaginationAware(t *testing.T) {
+	if sectionGapBefore <= sectionContentGap {
+		t.Fatalf("section gap %v must exceed title-to-content gap %v", sectionGapBefore, sectionContentGap)
+	}
+	if sectionTitleHeight <= 0 || sectionContentGap <= 0 {
+		t.Fatalf("invalid section rhythm: title=%v content gap=%v", sectionTitleHeight, sectionContentGap)
+	}
+	if 18+sectionTitleHeight+sectionContentGap+sectionGapBefore >= pageHeight {
+		t.Fatal("section spacing does not leave safe page content bounds")
+	}
+}
+
 func TestTablePaddingStaysInsideCellBounds(t *testing.T) {
 	if tablePaddingX < 2 || tablePaddingX > 3 || tablePaddingY < 1.5 || tablePaddingY > 2 {
 		t.Fatalf("unexpected table padding: horizontal=%v vertical=%v", tablePaddingX, tablePaddingY)

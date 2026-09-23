@@ -33,6 +33,9 @@ const (
 	tableHeaderPaddingY = 1.5
 	tableMinRowHeight   = 8.0
 	rowLineH            = 5.0
+	sectionGapBefore    = 7.0
+	sectionTitleHeight  = 8.0
+	sectionContentGap   = 4.0
 )
 
 type Renderer struct {
@@ -128,10 +131,11 @@ func (r *Renderer) Render(ctx context.Context, model *report.HiveReport) ([]byte
 func HiveQRPayload(hiveID string) string { return "beebase://hive/v1/" + hiveID }
 
 type document struct {
-	pdf     *fpdf.Fpdf
-	tr      Catalog
-	ctx     context.Context
-	palette ReportPalette
+	pdf      *fpdf.Fpdf
+	tr       Catalog
+	ctx      context.Context
+	palette  ReportPalette
+	sections int
 }
 
 func (d *document) check() error {
@@ -200,19 +204,29 @@ func (d *document) qr(hiveID string) error {
 	return nil
 }
 
-func (d *document) section(title string) error {
+func (d *document) section(title string, minimumContentHeight float64) error {
 	if err := d.check(); err != nil {
 		return err
 	}
-	if d.pdf.GetY() > pageHeight-42 {
+	gap := 0.0
+	if d.sections > 0 {
+		gap = sectionGapBefore
+	}
+	reserve := gap + sectionTitleHeight + sectionContentGap + minimumContentHeight
+	if d.pdf.GetY()+reserve > pageHeight-18 {
 		d.pdf.AddPage()
+		gap = 0
+	}
+	if gap > 0 {
+		d.pdf.Ln(gap)
 	}
 	setTextColor(d.pdf, d.palette.TextPrimary)
 	d.pdf.SetFont("plex", "B", 15)
-	d.pdf.CellFormat(contentW, 8, title, "", 1, "L", false, 0, "")
+	d.pdf.CellFormat(contentW, sectionTitleHeight, title, "", 1, "L", false, 0, "")
 	d.fullWidthDivider(d.pdf.GetY())
-	d.pdf.Ln(4)
+	d.pdf.Ln(sectionContentGap)
 	d.setBody()
+	d.sections++
 	return nil
 }
 
@@ -227,7 +241,7 @@ func fullWidthDividerBounds() (left, right, width float64) {
 }
 
 func (d *document) health(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.colony_health")); err != nil {
+	if err := d.section(d.tr.T("report.colony_health"), 30); err != nil {
 		return err
 	}
 	d.pdf.SetFont("plex", "B", 10)
@@ -252,7 +266,7 @@ func (d *document) health(model *report.HiveReport) error {
 }
 
 func (d *document) history(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.health_history")); err != nil {
+	if err := d.section(d.tr.T("report.health_history"), 63); err != nil {
 		return err
 	}
 	if len(model.HealthHistory.Points) == 0 {
@@ -327,7 +341,7 @@ func chartY(y, h float64, state string) float64 {
 }
 
 func (d *document) inspections(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.inspections")); err != nil {
+	if err := d.section(d.tr.T("report.inspections"), 18); err != nil {
 		return err
 	}
 	if len(model.Inspections) == 0 {
@@ -392,7 +406,7 @@ func (d *document) assessment(value *report.AssessmentData) string {
 }
 
 func (d *document) queens(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.queen_history")); err != nil {
+	if err := d.section(d.tr.T("report.queen_history"), 18); err != nil {
 		return err
 	}
 	if len(model.Queens) == 0 {
@@ -420,7 +434,7 @@ func (d *document) queens(model *report.HiveReport) error {
 }
 
 func (d *document) harvests(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.harvests")); err != nil {
+	if err := d.section(d.tr.T("report.harvests"), 18); err != nil {
 		return err
 	}
 	if len(model.Harvests) == 0 {
@@ -442,7 +456,7 @@ func (d *document) harvests(model *report.HiveReport) error {
 }
 
 func (d *document) summary(model *report.HiveReport) error {
-	if err := d.section(d.tr.T("report.summary")); err != nil {
+	if err := d.section(d.tr.T("report.summary"), 24); err != nil {
 		return err
 	}
 	d.summaryRow(d.tr.T("report.inspections"), strconv.Itoa(len(model.Inspections)))
@@ -496,12 +510,37 @@ func (d *document) wrappedRow(values []string, widths []float64, lineHeight, ver
 		d.pdf.MultiCell(innerWidth, lineHeight, strings.Join(cellLines, "\n"), "", "L", false)
 		x += width
 	}
+	d.tableColumnSeparators(widths, y, y+rowHeight)
 	if separator {
 		setDrawColor(d.pdf, reportTableStyle.border)
 		d.pdf.SetLineWidth(reportTableStyle.borderWidth)
 		d.pdf.Line(contentLeft, y+rowHeight, contentRight, y+rowHeight)
 	}
 	d.pdf.SetXY(contentLeft, y+rowHeight)
+}
+
+func (d *document) tableColumnSeparators(widths []float64, top, bottom float64) {
+	if len(widths) < 2 {
+		return
+	}
+	setDrawColor(d.pdf, reportTableStyle.border)
+	d.pdf.SetLineWidth(reportTableStyle.borderWidth)
+	for _, x := range tableColumnBoundaries(widths) {
+		d.pdf.Line(x, top, x, bottom)
+	}
+}
+
+func tableColumnBoundaries(widths []float64) []float64 {
+	if len(widths) < 2 {
+		return nil
+	}
+	boundaries := make([]float64, 0, len(widths)-1)
+	x := contentLeft
+	for _, width := range widths[:len(widths)-1] {
+		x += width
+		boundaries = append(boundaries, x)
+	}
+	return boundaries
 }
 
 func (d *document) wrapCell(value string, width float64) []string {
